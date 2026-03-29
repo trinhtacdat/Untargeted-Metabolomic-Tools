@@ -10,6 +10,7 @@ from matplotlib.patches import Ellipse
 import scipy.cluster.hierarchy as sch
 import os
 import re
+import sys
 import pickle
 import datetime
 from collections import defaultdict
@@ -59,6 +60,10 @@ class MetabolomicsApp(tk.Tk):
         self.volcano_result = None
         self.rf_result = None
         self.heatmap_data = None
+        self.hca_result = None
+        self.heatmap_annotation_map = {}
+        self.heatmap_annotation_path = ""
+        self.model_comparison_sets = {} # Store feature sets for custom Venn analysis
         self.generated_plots = {}
 
         # Global plot settings
@@ -93,10 +98,12 @@ class MetabolomicsApp(tk.Tk):
         export_menu = tk.Menu(file_menu, tearoff=0)
         file_menu.add_cascade(label="Export", menu=export_menu)
         export_menu.add_command(label="Export Preprocessed Data", command=self.export_preprocessed)
+        export_menu.add_command(label="Export Screened Data (ML Ready)", command=self.export_screened_data)
         export_menu.add_command(label="Export PCA Results", command=self.export_pca)
         export_menu.add_command(label="Export Volcano Results", command=self.export_volcano_results)
         export_menu.add_command(label="Export PLS-DA VIPs", command=self.export_plsda_vips)
         export_menu.add_command(label="Export RF Features", command=self.export_rf_features)
+        export_menu.add_command(label="Export PLS-DA + RF Features", command=self.export_plsda_rf_features)
         export_menu.add_command(label="Export Consensus Biomarkers", command=self.export_consensus_features)
         export_menu.add_command(label="Export Heatmap Data", command=self.export_heatmap_data)
         export_menu.add_separator()
@@ -111,6 +118,8 @@ class MetabolomicsApp(tk.Tk):
         menubar.add_cascade(label="Edit", menu=edit_menu)
         edit_menu.add_command(label="Rename Samples", command=self.rename_samples_dialog)
         edit_menu.add_command(label="Configure Groups", command=self.configure_groups)
+        edit_menu.add_command(label="Import Group Config", command=self.import_group_config)
+        edit_menu.add_command(label="Export Group Config", command=self.export_group_config)
         edit_menu.add_command(label="Manage Group Names", command=self.manage_group_names)
         edit_menu.add_command(label="Select QC Samples", command=self.select_qc_samples)
         edit_menu.add_separator()
@@ -138,16 +147,19 @@ class MetabolomicsApp(tk.Tk):
         # Create tabs logically sorted for sequential workflow
         self.create_data_tab()
         self.create_preprocessing_tab()
+        self.create_global_heatmap_tab()
+        self.create_venn_tab()
         self.create_pca_tab()
+        self.create_hca_only_tab()
         self.create_volcano_tab()  # Univariate screening now precedes predictive ML
         self.create_plsda_tab()
         self.create_pls_val_tab()
         self.create_rf_tab()
         self.create_heatmap_tab()
-        self.create_venn_tab()
-        self.create_upset_tab()
+        self.create_model_comparison_tab()
         self.create_feature_viewer_tab()
         self.create_spectrum_tab()
+        self.create_qc_explorer_tab()
         
     def create_data_tab(self):
         """Tab 1: Data Loading and Preview"""
@@ -304,36 +316,6 @@ class MetabolomicsApp(tk.Tk):
             width=10
         ).grid(row=row, column=2, sticky='w', padx=2)
         
-        # Missing Value Imputation Section
-        row += 1
-        ttk.Separator(options_frame, orient='horizontal').grid(row=row, column=0, columnspan=3, sticky='ew', pady=10)
-        
-        row += 1
-        ttk.Label(
-            options_frame, 
-            text="🩹 Missing Value Imputation:", 
-            font=('Arial', 10, 'bold')
-        ).grid(row=row, column=0, columnspan=3, sticky='w', pady=(5,2))
-        
-        row += 1
-        self.impute_lod_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            options_frame,
-            text="LOD Imputation (replace zeros/missing)",
-            variable=self.impute_lod_var
-        ).grid(row=row, column=0, sticky='w', padx=(20,5))
-        
-        ttk.Label(options_frame, text="Fraction of Min:").grid(row=row, column=1, sticky='e', padx=2)
-        self.lod_fraction_var = tk.DoubleVar(value=0.2)
-        ttk.Spinbox(
-            options_frame,
-            from_=0.1,
-            to=0.5,
-            increment=0.1,
-            textvariable=self.lod_fraction_var,
-            width=8
-        ).grid(row=row, column=2, sticky='w', padx=2)
-        
         # Feature Filtering Section
         row += 1
         ttk.Separator(options_frame, orient='horizontal').grid(row=row, column=0, columnspan=3, sticky='ew', pady=10)
@@ -382,6 +364,27 @@ class MetabolomicsApp(tk.Tk):
             width=10
         ).grid(row=row, column=2, sticky='w', padx=2)
         
+        # QC presence filter
+        row += 1
+        self.filter_qc_presence_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            options_frame,
+            text="QC Presence filter",
+            variable=self.filter_qc_presence_var,
+            command=self.on_rsd_filter_toggle
+        ).grid(row=row, column=0, sticky='w', padx=(20,5))
+        
+        ttk.Label(options_frame, text="Min % in QC:").grid(row=row, column=1, sticky='e', padx=2)
+        self.qc_presence_threshold_var = tk.DoubleVar(value=80.0)
+        ttk.Spinbox(
+            options_frame,
+            from_=0,
+            to=100,
+            increment=5,
+            textvariable=self.qc_presence_threshold_var,
+            width=8
+        ).grid(row=row, column=2, sticky='w', padx=2)
+
         # RSD filter (for QC samples)
         row += 1
         self.filter_rsd_var = tk.BooleanVar(value=False)
@@ -462,7 +465,7 @@ class MetabolomicsApp(tk.Tk):
         norm_combo = ttk.Combobox(
             options_frame,
             textvariable=self.norm_method_var,
-            values=["TIC", "Median", "Log", "Pareto", "Auto", "None"],
+            values=["Log", "Log2", "None"],
             state='readonly',
             width=15
         )
@@ -505,6 +508,208 @@ class MetabolomicsApp(tk.Tk):
         self.preprocessing_plot_frame = ttk.Frame(plot_label_frame)
         self.preprocessing_plot_frame.pack(fill='both', expand=True)
         
+    # ==================== Global Heatmap ====================
+    
+    def create_global_heatmap_tab(self):
+        """Tab 2.5: Global Heatmap Visualization"""
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="🌐 Global Heatmap")
+
+        control_frame = ttk.LabelFrame(tab, text="Global Heatmap Settings", padding=10)
+        control_frame.pack(fill='x', padx=10, pady=10)
+
+        settings_frame = ttk.Frame(control_frame)
+        settings_frame.pack(side='left', fill='y', padx=(0, 20))
+        
+        groups_frame = ttk.LabelFrame(control_frame, text="Select Groups (All if none selected)", padding=5)
+        groups_frame.pack(side='left', fill='both', expand=True)
+
+        list_container = ttk.Frame(groups_frame)
+        list_container.pack(side='left', fill='both', expand=True)
+
+        self.global_heatmap_group_listbox = tk.Listbox(list_container, selectmode='multiple', height=4, exportselection=0)
+        self.global_heatmap_group_listbox.pack(side='left', fill='both', expand=True)
+        sb = ttk.Scrollbar(list_container, orient='vertical', command=self.global_heatmap_group_listbox.yview)
+        sb.pack(side='right', fill='y')
+        self.global_heatmap_group_listbox.config(yscrollcommand=sb.set)
+
+        btn_container = ttk.Frame(groups_frame)
+        btn_container.pack(side='left', fill='y', padx=5)
+        ttk.Button(btn_container, text="▲", width=3, command=lambda: self.move_listbox_item(self.global_heatmap_group_listbox)).pack(side='top', pady=1)
+        ttk.Button(btn_container, text="▼", width=3, command=lambda: self.move_listbox_item(self.global_heatmap_group_listbox, down=True)).pack(side='top', pady=1)
+
+        row = 0
+        ttk.Label(settings_frame, text="Max Features (Highest Variance):").grid(row=row, column=0, sticky='w', padx=5, pady=2)
+        self.global_heatmap_max_var = tk.IntVar(value=1000)
+        ttk.Spinbox(settings_frame, from_=100, to=10000, increment=500, textvariable=self.global_heatmap_max_var, width=8).grid(row=row, column=1, sticky='w', padx=5, pady=2)
+
+        row += 1
+        ttk.Label(settings_frame, text="Sort Features By:").grid(row=row, column=0, sticky='w', padx=5, pady=2)
+        self.global_heatmap_sort_var = tk.StringVar(value="Clustering")
+        ttk.Combobox(settings_frame, textvariable=self.global_heatmap_sort_var, values=["Retention Time", "Clustering"], state='readonly', width=14).grid(row=row, column=1, sticky='w', padx=5, pady=2)
+
+        row += 1
+        ttk.Label(settings_frame, text="Color Map:").grid(row=row, column=0, sticky='w', padx=5, pady=2)
+        self.global_heatmap_cmap_var = tk.StringVar(value="coolwarm")
+        ttk.Combobox(settings_frame, textvariable=self.global_heatmap_cmap_var, values=["coolwarm", "bwr", "RdBu_r", "viridis", "magma"], state='readonly', width=10).grid(row=row, column=1, sticky='w', padx=5, pady=2)
+
+        row += 1
+        ttk.Label(settings_frame, text="Clustering Linkage:").grid(row=row, column=0, sticky='w', padx=5, pady=2)
+        self.global_heatmap_linkage_var = tk.StringVar(value="average")
+        ttk.Combobox(settings_frame, textvariable=self.global_heatmap_linkage_var, values=["average", "ward", "complete", "single"], state='readonly', width=10).grid(row=row, column=1, sticky='w', padx=5, pady=2)
+
+        row += 1
+        ttk.Label(settings_frame, text="Column Labels:").grid(row=row, column=0, sticky='w', padx=5, pady=2)
+        self.global_heatmap_label_var = tk.StringVar(value="Sample Group")
+        ttk.Combobox(settings_frame, textvariable=self.global_heatmap_label_var, values=["Sample Group", "Sample Name"], state='readonly', width=14).grid(row=row, column=1, sticky='w', padx=5, pady=2)
+
+        row += 1
+        ttk.Button(settings_frame, text="▶️ Create Global Heatmap", command=self.run_global_heatmap).grid(row=row, column=0, columnspan=2, pady=(10, 0))
+
+        self.global_heatmap_plot_frame = ttk.Frame(tab)
+        self.global_heatmap_plot_frame.pack(fill='both', expand=True, padx=10, pady=5)
+
+    def run_global_heatmap(self):
+        """Run Heatmap generation for the entire (or top varying) dataset"""
+        if getattr(self, 'preprocessed_data', None) is None:
+            messagebox.showwarning("Warning", "Please run preprocessing first!")
+            return
+
+        try:
+            self.update_status("Generating Global Heatmap...")
+            
+            selected_indices = getattr(self, 'global_heatmap_group_listbox', tk.Listbox()).curselection()
+            if selected_indices:
+                selected_groups = [self.global_heatmap_group_listbox.get(i) for i in selected_indices]
+            else:
+                selected_groups = None
+                
+            max_feat = getattr(self, 'global_heatmap_max_var', tk.IntVar(value=1000)).get()
+            sort_method = getattr(self, 'global_heatmap_sort_var', tk.StringVar(value="Clustering")).get()
+            cmap = getattr(self, 'global_heatmap_cmap_var', tk.StringVar(value="coolwarm")).get()
+            linkage_method = getattr(self, 'global_heatmap_linkage_var', tk.StringVar(value="average")).get()
+            label_mode = getattr(self, 'global_heatmap_label_var', tk.StringVar(value="Sample Group")).get()
+
+            def sample_label(info):
+                return info['name'] if label_mode == "Sample Name" else info['group']
+
+            # Get group order from listbox
+            listbox_groups = list(self.global_heatmap_group_listbox.get(0, tk.END))
+            group_order = {g: i for i, g in enumerate(listbox_groups)}
+
+            # 1. Identify valid columns based on group selection
+            sample_cols = [col for col in self.preprocessed_data.columns if '.mzML' in col]
+            target_sample_cols = []
+            for base_name, reps in self.replicate_mapping.items():
+                group = self.group_mapping.get(base_name, "Ungrouped")
+                if selected_groups and group not in selected_groups:
+                    continue
+                rep_cols = [col for col, _ in reps if col in sample_cols]
+                target_sample_cols.extend(rep_cols)
+                    
+            if not target_sample_cols:
+                messagebox.showwarning("Warning", "No samples found for the selected groups.")
+                return
+
+            # 2. Filter features by variance within the SELECTED samples
+            data = self.preprocessed_data.copy()
+            if len(data) > max_feat:
+                variances = data[target_sample_cols].var(axis=1)
+                top_indices = variances.nlargest(max_feat).index
+                data = data.loc[top_indices].copy()
+
+            feature_ids = data.iloc[:, 0].tolist()
+
+            if sort_method == "Retention Time":
+                rts = [float(str(fid).split('_')[-1]) if len(str(fid).split('_')) >= 3 else 0.0 for fid in feature_ids]
+                data['temp_rt'] = rts
+                data = data.sort_values('temp_rt').drop('temp_rt', axis=1).reset_index(drop=True)
+                feature_ids = data.iloc[:, 0].tolist()
+
+            bio_samples_list, qc_samples_list = [], []
+            for base_name, reps in self.replicate_mapping.items():
+                group = self.group_mapping.get(base_name, "Ungrouped")
+                if selected_groups and group not in selected_groups:
+                    continue
+                is_qc = (base_name in self.qc_samples) or ('qc' in group.lower())
+                rep_cols = [(col, rep_num) for col, rep_num in reps if col in sample_cols]
+                for col, rep_num in rep_cols:
+                    vals = data[col].values
+                    rep_name = f"{base_name}_{rep_num}"
+                    sample_data = {'vals': vals, 'name': rep_name, 'group': group}
+                    if is_qc:
+                        qc_samples_list.append(sample_data)
+                    else:
+                        bio_samples_list.append(sample_data)
+
+            # Sort biological samples by user-defined listbox order, then by sample name
+            bio_samples_list.sort(key=lambda x: (group_order.get(x['group'], 999), x['name']))
+            # Sort QC samples by name for consistent display
+            qc_samples_list.sort(key=lambda x: x['name'])
+            
+            bio_intensities = [s['vals'] for s in bio_samples_list]
+            bio_info = [{'name': s['name'], 'group': s['group']} for s in bio_samples_list]
+            qc_intensities = [s['vals'] for s in qc_samples_list]
+            qc_info = [{'name': s['name'], 'group': s['group']} for s in qc_samples_list]
+
+            if not bio_info and not qc_info:
+                messagebox.showwarning("Warning", "No samples found to plot."); return
+
+            all_intensities = bio_intensities + qc_intensities
+            intensities = np.array(all_intensities).T
+            scaled_intensities = StandardScaler().fit_transform(intensities.T).T
+
+            n_bio, n_qc = len(bio_info), len(qc_info)
+            scaled_bio, scaled_qc = scaled_intensities[:, :n_bio], scaled_intensities[:, n_bio:]
+
+            row_linkage = None
+            if sort_method == "Clustering" and len(feature_ids) > 1:
+                # Safeguard against recursion limits for deep trees
+                required_limit = max(2000, len(feature_ids) * 10)
+                if sys.getrecursionlimit() < required_limit:
+                    sys.setrecursionlimit(required_limit)
+                
+                row_metric = 'euclidean' if linkage_method == 'ward' else 'correlation'
+                row_linkage = sch.linkage(scaled_bio if n_bio > 0 else scaled_qc, method=linkage_method, metric=row_metric)
+                row_idx = sch.dendrogram(row_linkage, no_plot=True)['leaves']
+                scaled_bio = scaled_bio[row_idx, :]
+                if n_qc > 0: scaled_qc = scaled_qc[row_idx, :]
+                feature_ids = [feature_ids[i] for i in row_idx]
+
+            ordered_data_list, final_sample_names, column_colors, col_linkage = [], [], [], None
+            final_sample_groups = []
+            # Group-based sorting and colors, with user-selected column labels.
+            if n_bio > 0:
+                ordered_data_list.append(scaled_bio)
+                final_sample_names.extend([sample_label(info) for info in bio_info])
+                final_sample_groups.extend([info['group'] for info in bio_info])
+                column_colors.extend([self.group_colors.get(info['group'], '#CCCCCC') for info in bio_info])
+
+            if n_qc > 0:
+                ordered_data_list.append(scaled_qc)
+                final_sample_names.extend([sample_label(info) for info in qc_info])
+                final_sample_groups.extend([info['group'] for info in qc_info])
+                column_colors.extend([self.group_colors.get(info['group'], '#CCCCCC') for info in qc_info])
+
+            ordered_data = np.hstack(ordered_data_list)
+            title = f"Global Heatmap (Top {len(feature_ids)} Features by Variance)" if len(self.preprocessed_data) > max_feat else "Global Heatmap (All Features)"
+            title += " - Clustered" if sort_method == "Clustering" else " - Sorted by RT"
+
+            self.vis_manager.create_heatmap_plot(
+                ordered_data, feature_ids, final_sample_names, col_linkage, row_linkage, 
+                n_bio, n_qc, cmap=cmap, target_frame=self.global_heatmap_plot_frame, 
+                plot_title=title, plot_key='Global Heatmap', column_colors=column_colors,
+                column_groups=final_sample_groups, show_group_legend=(label_mode == "Sample Name")
+            )
+
+            self.global_heatmap_generated = True
+            self.update_status("✓ Global Heatmap generated successfully")
+
+        except Exception as e:
+            import traceback
+            messagebox.showerror("Error", f"Global Heatmap failed:\n{str(e)}\n\nDetails:\n{traceback.format_exc()}")
+            self.update_status("Error generating global heatmap")
+
     def create_pca_tab(self):
         """Tab 3: PCA Analysis with Grouping"""
         tab = ttk.Frame(self.notebook)
@@ -518,6 +723,26 @@ class MetabolomicsApp(tk.Tk):
         settings_frame = ttk.Frame(control_frame)
         settings_frame.pack(side='left', fill='y', padx=(0, 20))
         
+        # Manual Feature Filter frame
+        filter_frame = ttk.LabelFrame(control_frame, text="Manual Feature Filter", padding=5)
+        filter_frame.pack(side='left', fill='both', expand=True, padx=10)
+        
+        self.pca_filter_enabled_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            filter_frame,
+            text="Filter by Feature ID list:",
+            variable=self.pca_filter_enabled_var
+        ).pack(anchor='w')
+        
+        self.pca_filter_text = scrolledtext.ScrolledText(
+            filter_frame,
+            height=5,
+            width=25,
+            font=('Courier', 9)
+        )
+        self.pca_filter_text.pack(fill='both', expand=True, pady=2)
+        ttk.Label(filter_frame, text="Paste Full IDs or Row IDs (space/newline separated)", font=('Arial', 7), foreground="gray").pack(anchor='w')
+
         groups_frame = ttk.LabelFrame(control_frame, text="Select Groups (All if none selected)", padding=5)
         groups_frame.pack(side='left', fill='both', expand=True)
 
@@ -586,12 +811,21 @@ class MetabolomicsApp(tk.Tk):
             command=self.run_pca
         ).grid(row=row, column=0, columnspan=2, pady=10)
         
-        # Group Selection Listbox
-        self.pca_group_listbox = tk.Listbox(groups_frame, selectmode='multiple', height=6, exportselection=0)
+        # Group selection and legend ordering
+        pca_list_container = ttk.Frame(groups_frame)
+        pca_list_container.pack(side='left', fill='both', expand=True)
+        self.pca_group_listbox = tk.Listbox(pca_list_container, selectmode='multiple', height=6, exportselection=0)
         self.pca_group_listbox.pack(side='left', fill='both', expand=True)
-        sb = ttk.Scrollbar(groups_frame, orient='vertical', command=self.pca_group_listbox.yview)
+        sb = ttk.Scrollbar(pca_list_container, orient='vertical', command=self.pca_group_listbox.yview)
         sb.pack(side='right', fill='y')
         self.pca_group_listbox.config(yscrollcommand=sb.set)
+
+        pca_order_buttons = ttk.Frame(groups_frame)
+        pca_order_buttons.pack(side='left', fill='y', padx=5)
+        ttk.Button(pca_order_buttons, text="▲", width=3,
+                   command=lambda: self.move_pca_group()).pack(side='top', pady=1)
+        ttk.Button(pca_order_buttons, text="▼", width=3,
+                   command=lambda: self.move_pca_group(down=True)).pack(side='top', pady=1)
         
         # Plot area
         self.pca_plot_frame = ttk.Frame(tab)
@@ -619,6 +853,14 @@ class MetabolomicsApp(tk.Tk):
         self.volcano_group2_var = tk.StringVar()
         self.volcano_group2_combo = ttk.Combobox(group_frame, textvariable=self.volcano_group2_var, state='readonly', width=15)
         self.volcano_group2_combo.pack(side='left', padx=5)
+        
+        # Feature Subset Selection
+        subset_frame = ttk.Frame(control_frame)
+        subset_frame.pack(fill='x', pady=(0, 10))
+        ttk.Label(subset_frame, text="Feature Subset:").pack(side='left', padx=5)
+        self.volcano_subset_var = tk.StringVar(value="All Preprocessed Features")
+        self.volcano_subset_combo = ttk.Combobox(subset_frame, textvariable=self.volcano_subset_var, state='readonly', width=50)
+        self.volcano_subset_combo.pack(side='left', padx=5)
         
         # Thresholds
         # Add Correction Method Selection
@@ -696,36 +938,24 @@ class MetabolomicsApp(tk.Tk):
             variable=self.plsda_exclude_qc_var
         ).grid(row=2, column=0, columnspan=2, sticky='w', padx=5, pady=5)
         
-        # --- Pairwise Comparison Option ---
-        self.plsda_pairwise_var = tk.BooleanVar(value=False)
+        # --- Group Selection ---
+        group_select_frame = ttk.LabelFrame(control_frame, text="Select Groups (All if none selected)", padding=5)
+        group_select_frame.grid(row=0, column=2, rowspan=5, sticky='nsew', padx=20)
         
-        def toggle_pairwise():
-            if self.plsda_pairwise_var.get():
-                self.plsda_group_frame.grid()
-                self.update_group_dropdowns()
-            else:
-                self.plsda_group_frame.grid_remove()
+        plsda_list_container = ttk.Frame(group_select_frame)
+        plsda_list_container.pack(side='left', fill='both', expand=True)
+        self.plsda_group_listbox = tk.Listbox(plsda_list_container, selectmode='multiple', height=5, exportselection=0)
+        self.plsda_group_listbox.pack(side='left', fill='both', expand=True)
+        sb = ttk.Scrollbar(plsda_list_container, orient='vertical', command=self.plsda_group_listbox.yview)
+        sb.pack(side='right', fill='y')
+        self.plsda_group_listbox.config(yscrollcommand=sb.set)
 
-        ttk.Checkbutton(
-            control_frame,
-            text="Pairwise Comparison (Select 2 Groups)",
-            variable=self.plsda_pairwise_var,
-            command=toggle_pairwise
-        ).grid(row=3, column=0, columnspan=2, sticky='w', padx=5, pady=5)
-        
-        self.plsda_group_frame = ttk.Frame(control_frame)
-        self.plsda_group_frame.grid(row=4, column=0, columnspan=3, sticky='w', padx=5, pady=5)
-        self.plsda_group_frame.grid_remove() # Hidden by default
-        
-        ttk.Label(self.plsda_group_frame, text="Group 1:").pack(side='left', padx=2)
-        self.plsda_group1_var = tk.StringVar()
-        self.plsda_group1_combo = ttk.Combobox(self.plsda_group_frame, textvariable=self.plsda_group1_var, state='readonly', width=15)
-        self.plsda_group1_combo.pack(side='left', padx=5)
-
-        ttk.Label(self.plsda_group_frame, text="Group 2:").pack(side='left', padx=2)
-        self.plsda_group2_var = tk.StringVar()
-        self.plsda_group2_combo = ttk.Combobox(self.plsda_group_frame, textvariable=self.plsda_group2_var, state='readonly', width=15)
-        self.plsda_group2_combo.pack(side='left', padx=5)
+        plsda_order_buttons = ttk.Frame(group_select_frame)
+        plsda_order_buttons.pack(side='left', fill='y', padx=5)
+        ttk.Button(plsda_order_buttons, text="▲", width=3,
+                   command=lambda: self.move_plsda_group()).pack(side='top', pady=1)
+        ttk.Button(plsda_order_buttons, text="▼", width=3,
+                   command=lambda: self.move_plsda_group(down=True)).pack(side='top', pady=1)
         
         # Button frame
         button_frame = ttk.Frame(control_frame)
@@ -819,45 +1049,24 @@ class MetabolomicsApp(tk.Tk):
             control_frame, text="Exclude QC Samples", variable=self.rf_exclude_qc_var
         ).grid(row=2, column=0, columnspan=2, sticky='w', padx=5, pady=5)
         
-        # --- Pairwise Comparison Option ---
-        self.rf_pairwise_var = tk.BooleanVar(value=False)
+        # --- Group Selection ---
+        group_select_frame = ttk.LabelFrame(control_frame, text="Select Groups (All if none selected)", padding=5)
+        group_select_frame.grid(row=0, column=2, rowspan=5, sticky='nsew', padx=20)
         
-        def toggle_rf_pairwise():
-            if self.rf_pairwise_var.get():
-                self.rf_group_frame.grid()
-                self.update_group_dropdowns()
-            else:
-                self.rf_group_frame.grid_remove()
-
-        ttk.Checkbutton(
-            control_frame,
-            text="Pairwise Comparison (Select 2 Groups)",
-            variable=self.rf_pairwise_var,
-            command=toggle_rf_pairwise
-        ).grid(row=3, column=0, columnspan=2, sticky='w', padx=5, pady=5)
-        
-        self.rf_group_frame = ttk.Frame(control_frame)
-        self.rf_group_frame.grid(row=4, column=0, columnspan=3, sticky='w', padx=5, pady=5)
-        self.rf_group_frame.grid_remove() # Hidden by default
-        
-        ttk.Label(self.rf_group_frame, text="Group 1:").pack(side='left', padx=2)
-        self.rf_group1_var = tk.StringVar()
-        self.rf_group1_combo = ttk.Combobox(self.rf_group_frame, textvariable=self.rf_group1_var, state='readonly', width=15)
-        self.rf_group1_combo.pack(side='left', padx=5)
-
-        ttk.Label(self.rf_group_frame, text="Group 2:").pack(side='left', padx=2)
-        self.rf_group2_var = tk.StringVar()
-        self.rf_group2_combo = ttk.Combobox(self.rf_group_frame, textvariable=self.rf_group2_var, state='readonly', width=15)
-        self.rf_group2_combo.pack(side='left', padx=5)
+        self.rf_group_listbox = tk.Listbox(group_select_frame, selectmode='multiple', height=5, exportselection=0)
+        self.rf_group_listbox.pack(side='left', fill='both', expand=True)
+        sb = ttk.Scrollbar(group_select_frame, orient='vertical', command=self.rf_group_listbox.yview)
+        sb.pack(side='right', fill='y')
+        self.rf_group_listbox.config(yscrollcommand=sb.set)
         
         self.rf_roc_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(
-            control_frame, text="Generate ROC Curve (Pairwise only)", variable=self.rf_roc_var
-        ).grid(row=5, column=0, columnspan=2, sticky='w', padx=5, pady=5)
+            control_frame, text="Generate ROC Curve (Requires exactly 2 groups)", variable=self.rf_roc_var
+        ).grid(row=3, column=0, columnspan=2, sticky='w', padx=5, pady=5)
         
         # Buttons
         btn_frame = ttk.Frame(control_frame)
-        btn_frame.grid(row=6, column=0, columnspan=2, pady=10, sticky='w')
+        btn_frame.grid(row=4, column=0, columnspan=2, pady=10, sticky='w')
         
         ttk.Button(
             btn_frame,
@@ -869,6 +1078,12 @@ class MetabolomicsApp(tk.Tk):
             btn_frame,
             text="💾 Export Features",
             command=self.export_rf_features
+        ).pack(side='left', padx=5)
+        
+        ttk.Button(
+            btn_frame,
+            text="🧪 Run Permutation Test",
+            command=self.run_rf_permutation
         ).pack(side='left', padx=5)
         
         # Results text
@@ -894,38 +1109,334 @@ class MetabolomicsApp(tk.Tk):
         control_frame = ttk.LabelFrame(tab, text="Heatmap Settings", padding=10)
         control_frame.pack(fill='x', padx=10, pady=10)
         
-        # Pack right-side buttons first
-        ttk.Button(
-            control_frame, text="▶️ Create Clustered Heatmap", command=self.run_heatmap
-        ).pack(side='right', padx=10)
-        ttk.Button(
-            control_frame, text="💾 Export Heatmap Data", command=self.export_heatmap_data
-        ).pack(side='right', padx=5)
+        # Split into left (settings), middle (groups), right (buttons)
+        settings_frame = ttk.Frame(control_frame)
+        settings_frame.pack(side='left', fill='y', padx=(0, 20))
+        
+        group_frame = ttk.LabelFrame(control_frame, text="Select Groups (All if none selected)", padding=5)
+        group_frame.pack(side='left', fill='both', expand=True, padx=10)
+        
+        list_container = ttk.Frame(group_frame)
+        list_container.pack(side='left', fill='both', expand=True)
 
-        # Pack left-side controls sequentially
-        ttk.Label(control_frame, text="Top N (per model):").pack(side='left', padx=(5, 2))
+        self.heatmap_group_listbox = tk.Listbox(list_container, selectmode='multiple', height=4, exportselection=0)
+        self.heatmap_group_listbox.pack(side='left', fill='both', expand=True)
+        sb = ttk.Scrollbar(list_container, orient='vertical', command=self.heatmap_group_listbox.yview)
+        sb.pack(side='right', fill='y')
+        self.heatmap_group_listbox.config(yscrollcommand=sb.set)
+
+        btn_container = ttk.Frame(group_frame)
+        btn_container.pack(side='left', fill='y', padx=5)
+        ttk.Button(btn_container, text="▲", width=3, command=lambda: self.move_listbox_item(self.heatmap_group_listbox)).pack(side='top', pady=1)
+        ttk.Button(btn_container, text="▼", width=3, command=lambda: self.move_listbox_item(self.heatmap_group_listbox, down=True)).pack(side='top', pady=1)
+
+        btn_frame = ttk.Frame(control_frame)
+        btn_frame.pack(side='right', fill='y', padx=10)
+        
+        # Buttons
+        ttk.Button(btn_frame, text="▶️ Create Clustered Heatmap", command=self.run_heatmap).pack(fill='x', pady=2)
+        ttk.Button(btn_frame, text="💾 Export Heatmap Data", command=self.export_heatmap_data).pack(fill='x', pady=2)
+
+        # Settings
+        ttk.Label(settings_frame, text="Top N (per model):").grid(row=0, column=0, sticky='w', padx=5, pady=2)
         self.heatmap_top_n_var = tk.IntVar(value=15)
-        ttk.Spinbox(
-            control_frame,
-            from_=5,
-            to=50,
-            increment=5,
-            textvariable=self.heatmap_top_n_var,
-            width=5
-        ).pack(side='left', padx=2)
+        ttk.Spinbox(settings_frame, from_=5, to=50, increment=5, textvariable=self.heatmap_top_n_var, width=5).grid(row=0, column=1, sticky='w', padx=5, pady=2)
         
-        ttk.Label(control_frame, text="Sort Features By:").pack(side='left', padx=(10, 2))
+        ttk.Label(settings_frame, text="Sort Features By:").grid(row=1, column=0, sticky='w', padx=5, pady=2)
         self.heatmap_sort_var = tk.StringVar(value="Clustering")
-        ttk.Combobox(control_frame, textvariable=self.heatmap_sort_var, 
-                     values=["Retention Time", "Clustering"], state='readonly', width=14).pack(side='left', padx=2)
+        ttk.Combobox(settings_frame, textvariable=self.heatmap_sort_var, values=["Retention Time", "Clustering"], state='readonly', width=14).grid(row=1, column=1, sticky='w', padx=5, pady=2)
 
-        ttk.Label(control_frame, text="Color Map:").pack(side='left', padx=(10, 2))
+        ttk.Label(settings_frame, text="Color Map:").grid(row=2, column=0, sticky='w', padx=5, pady=2)
         self.heatmap_cmap_var = tk.StringVar(value="coolwarm")
-        ttk.Combobox(control_frame, textvariable=self.heatmap_cmap_var, 
-                     values=["coolwarm", "bwr", "RdBu_r", "viridis", "magma"], state='readonly', width=10).pack(side='left', padx=2)
+        ttk.Combobox(settings_frame, textvariable=self.heatmap_cmap_var, values=["coolwarm", "bwr", "RdBu_r", "viridis", "magma"], state='readonly', width=10).grid(row=2, column=1, sticky='w', padx=5, pady=2)
         
+        ttk.Label(settings_frame, text="Clustering Linkage:").grid(row=3, column=0, sticky='w', padx=5, pady=2)
+        self.heatmap_linkage_var = tk.StringVar(value="average")
+        ttk.Combobox(settings_frame, textvariable=self.heatmap_linkage_var, values=["average", "ward", "complete", "single"], state='readonly', width=10).grid(row=3, column=1, sticky='w', padx=5, pady=2)
+        
+        ttk.Label(settings_frame, text="Feature Source:").grid(row=4, column=0, sticky='w', padx=5, pady=2)
+        self.heatmap_source_var = tk.StringVar(value="Both (Union)")
+        ttk.Combobox(settings_frame, textvariable=self.heatmap_source_var, values=["Both (Union)", "PLS-DA VIPs only", "Random Forest only"], state='readonly', width=16).grid(row=4, column=1, sticky='w', padx=5, pady=2)
+
+        ttk.Label(settings_frame, text="Column Labels:").grid(row=5, column=0, sticky='w', padx=5, pady=2)
+        self.heatmap_label_var = tk.StringVar(value="Sample Group")
+        ttk.Combobox(settings_frame, textvariable=self.heatmap_label_var, values=["Sample Group", "Sample Name"], state='readonly', width=16).grid(row=5, column=1, sticky='w', padx=5, pady=2)
+
+        ttk.Label(settings_frame, text="Feature Labels:").grid(row=6, column=0, sticky='w', padx=5, pady=2)
+        self.heatmap_feature_label_var = tk.StringVar(value="Feature ID")
+        ttk.Combobox(
+            settings_frame,
+            textvariable=self.heatmap_feature_label_var,
+            values=["Feature ID", "Annotated Name", "ID + Annotated Name"],
+            state='readonly',
+            width=18
+        ).grid(row=6, column=1, sticky='w', padx=5, pady=2)
+
+        ttk.Button(
+            settings_frame,
+            text="Load Annotation File",
+            command=self.load_heatmap_annotation_file
+        ).grid(row=7, column=0, columnspan=2, sticky='ew', padx=5, pady=(6, 2))
+
+        self.heatmap_annotation_status_var = tk.StringVar(value="No annotation file loaded")
+        ttk.Label(
+            settings_frame,
+            textvariable=self.heatmap_annotation_status_var,
+            foreground='gray',
+            wraplength=260,
+            justify='left'
+        ).grid(row=8, column=0, columnspan=2, sticky='w', padx=5, pady=2)
+
         self.heatmap_plot_frame = ttk.Frame(tab)
         self.heatmap_plot_frame.pack(fill='both', expand=True, padx=10, pady=5)
+
+    def create_hca_only_tab(self):
+        """Tab for sample-only hierarchical clustering analysis."""
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="🌳 HCA Only")
+
+        control_frame = ttk.LabelFrame(tab, text="HCA Dendrogram Settings", padding=10)
+        control_frame.pack(fill='x', padx=10, pady=10)
+
+        settings_frame = ttk.Frame(control_frame)
+        settings_frame.pack(side='left', fill='y', padx=(0, 20))
+
+        hca_filter_frame = ttk.LabelFrame(control_frame, text="Manual Feature Filter", padding=5)
+        hca_filter_frame.pack(side='left', fill='both', expand=True, padx=10)
+
+        self.hca_filter_enabled_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            hca_filter_frame,
+            text="Filter by Feature ID or annotated name:",
+            variable=self.hca_filter_enabled_var
+        ).pack(anchor='w')
+
+        self.hca_filter_text = scrolledtext.ScrolledText(
+            hca_filter_frame,
+            height=5,
+            width=28,
+            font=('Courier', 9)
+        )
+        self.hca_filter_text.pack(fill='both', expand=True, pady=2)
+        ttk.Label(
+            hca_filter_frame,
+            text="Paste Feature IDs, Row IDs, or annotation names. HCA uses one averaged value per biological sample.",
+            font=('Arial', 7),
+            foreground="gray",
+            wraplength=220
+        ).pack(anchor='w')
+
+        ttk.Button(
+            hca_filter_frame,
+            text="Load Annotation File",
+            command=self.load_hca_annotation_file
+        ).pack(anchor='w', pady=(5, 2))
+
+        self.hca_annotation_status_var = tk.StringVar(value="No annotation file loaded")
+        ttk.Label(
+            hca_filter_frame,
+            textvariable=self.hca_annotation_status_var,
+            foreground='gray',
+            wraplength=220,
+            justify='left'
+        ).pack(anchor='w')
+
+        group_frame = ttk.LabelFrame(control_frame, text="Select Groups (All if none selected)", padding=5)
+        group_frame.pack(side='left', fill='both', expand=True, padx=10)
+
+        list_container = ttk.Frame(group_frame)
+        list_container.pack(side='left', fill='both', expand=True)
+
+        self.hca_group_listbox = tk.Listbox(list_container, selectmode='multiple', height=4, exportselection=0)
+        self.hca_group_listbox.pack(side='left', fill='both', expand=True)
+        sb = ttk.Scrollbar(list_container, orient='vertical', command=self.hca_group_listbox.yview)
+        sb.pack(side='right', fill='y')
+        self.hca_group_listbox.config(yscrollcommand=sb.set)
+
+        btn_container = ttk.Frame(group_frame)
+        btn_container.pack(side='left', fill='y', padx=5)
+        ttk.Button(btn_container, text="▲", width=3, command=lambda: self.move_listbox_item(self.hca_group_listbox)).pack(side='top', pady=1)
+        ttk.Button(btn_container, text="▼", width=3, command=lambda: self.move_listbox_item(self.hca_group_listbox, down=True)).pack(side='top', pady=1)
+
+        btn_frame = ttk.Frame(control_frame)
+        btn_frame.pack(side='right', fill='y', padx=10)
+        ttk.Button(btn_frame, text="▶️ Create HCA Dendrogram", command=self.run_hca_only).pack(fill='x', pady=2)
+
+        row = 0
+        ttk.Label(settings_frame, text="Data Source:").grid(row=row, column=0, sticky='w', padx=5, pady=2)
+        self.hca_data_source_var = tk.StringVar(value="Preprocessed Data")
+        ttk.Combobox(settings_frame, textvariable=self.hca_data_source_var, values=["Preprocessed Data", "Screened Data"], state='readonly', width=18).grid(row=row, column=1, sticky='w', padx=5, pady=2)
+
+        row += 1
+        ttk.Label(settings_frame, text="Max Features:").grid(row=row, column=0, sticky='w', padx=5, pady=2)
+        self.hca_max_features_var = tk.IntVar(value=0)
+        ttk.Spinbox(settings_frame, from_=0, to=10000, increment=100, textvariable=self.hca_max_features_var, width=8).grid(row=row, column=1, sticky='w', padx=5, pady=2)
+        ttk.Label(settings_frame, text="0 = all PCA-like features", font=('Arial', 7), foreground='gray').grid(row=row, column=2, sticky='w', padx=2, pady=2)
+
+        row += 1
+        ttk.Label(settings_frame, text="Linkage:").grid(row=row, column=0, sticky='w', padx=5, pady=2)
+        self.hca_linkage_var = tk.StringVar(value="average")
+        ttk.Combobox(settings_frame, textvariable=self.hca_linkage_var, values=["average", "ward", "complete", "single"], state='readonly', width=12).grid(row=row, column=1, sticky='w', padx=5, pady=2)
+
+        row += 1
+        ttk.Label(settings_frame, text="Distance:").grid(row=row, column=0, sticky='w', padx=5, pady=2)
+        self.hca_distance_var = tk.StringVar(value="euclidean")
+        ttk.Combobox(settings_frame, textvariable=self.hca_distance_var, values=["euclidean", "correlation", "cosine", "cityblock"], state='readonly', width=12).grid(row=row, column=1, sticky='w', padx=5, pady=2)
+
+        row += 1
+        ttk.Label(settings_frame, text="Sample Labels:").grid(row=row, column=0, sticky='w', padx=5, pady=2)
+        self.hca_label_var = tk.StringVar(value="Sample Name")
+        ttk.Combobox(settings_frame, textvariable=self.hca_label_var, values=["Sample Name", "Sample Group"], state='readonly', width=14).grid(row=row, column=1, sticky='w', padx=5, pady=2)
+
+        row += 1
+        self.hca_log_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(settings_frame, text="Apply Log10 Transform", variable=self.hca_log_var).grid(row=row, column=0, columnspan=2, sticky='w', padx=5, pady=2)
+
+        row += 1
+        self.hca_exclude_qc_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(settings_frame, text="Exclude QC Samples", variable=self.hca_exclude_qc_var).grid(row=row, column=0, columnspan=2, sticky='w', padx=5, pady=2)
+
+        self.hca_plot_frame = ttk.Frame(tab)
+        self.hca_plot_frame.pack(fill='both', expand=True, padx=10, pady=5)
+
+    def create_model_comparison_tab(self):
+        """Tab for Venn Diagram of custom feature sets (Consensus, PLS-DA, RF, Volcano)."""
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="🤝 Model Venn")
+        
+        main_container = ttk.PanedWindow(tab, orient=tk.HORIZONTAL)
+        main_container.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # --- Left Side: Set Management ---
+        left_panel = ttk.Frame(main_container)
+        main_container.add(left_panel, weight=1)
+        
+        control_frame = ttk.LabelFrame(left_panel, text="Input Data Sets", padding=10)
+        control_frame.pack(fill='both', expand=True)
+        
+        ttk.Label(control_frame, text="Select sets to compare (2-3 for Venn, >3 for Bar):", wraplength=200).pack(anchor='w', pady=(0, 5))
+        
+        self.model_sets_listbox = tk.Listbox(control_frame, selectmode='multiple', height=10, exportselection=0)
+        self.model_sets_listbox.pack(fill='both', expand=True, pady=5)
+        
+        btn_grid = ttk.Frame(control_frame)
+        btn_grid.pack(fill='x', pady=5)
+        
+        ttk.Button(btn_grid, text="➕ Register Current Models", command=self.register_current_models).pack(fill='x', pady=2)
+        ttk.Button(btn_grid, text="➕ Register Current Consensus", command=self.register_current_consensus).pack(fill='x', pady=2)
+        ttk.Button(btn_grid, text="🗑️ Remove Selected", command=self.remove_comparison_set).pack(fill='x', pady=2)
+        
+        ttk.Separator(control_frame, orient='horizontal').pack(fill='x', pady=10)
+        
+        ttk.Button(control_frame, text="▶️ Generate Comparison Plot", 
+                  command=self.run_model_venn).pack(fill='x', pady=5)
+                  
+        ttk.Button(control_frame, text="💾 Export Plot", 
+                  command=self.export_current_plot).pack(fill='x', pady=2)
+
+        ttk.Button(control_frame, text="💾 Export Consensus Table", 
+                  command=self.export_consensus_features).pack(fill='x', pady=2)
+
+        ttk.Button(control_frame, text="💾 Export PLS-DA + RF Table",
+                  command=self.export_plsda_rf_features).pack(fill='x', pady=2)
+        
+        # --- Right Side: Plot ---
+        self.model_venn_plot_frame = ttk.Frame(main_container)
+        main_container.add(self.model_venn_plot_frame, weight=3)
+
+    def register_current_models(self):
+        """Add current PLS-DA and RF significant features as separate sets."""
+        if self.plsda_result is None or self.rf_result is None:
+            messagebox.showwarning("Warning", "Please run both PLS-DA and Random Forest first!")
+            return
+            
+        groups = sorted(list(set(self.plsda_result['groups'])))
+        group_tag = f"({'-'.join(groups)})"
+        
+        # PLS-DA
+        pls_name = f"PLS-DA VIP>1 {group_tag}"
+        vips = self.plsda_result['vip_scores']
+        pls_fids = self.plsda_result.get('feature_ids', self.screened_data.iloc[:, 0].values)
+        self.model_comparison_sets[pls_name] = set(pls_fids[vips > 1.0])
+        
+        # RF
+        rf_name = f"RF Imp>0 {group_tag}"
+        rf_importances = self.rf_result['importances']
+        rf_fids = self.rf_result['feature_ids']
+        self.model_comparison_sets[rf_name] = set(rf_fids[rf_importances > 0.0])
+        
+        self.update_model_sets_listbox()
+        self.update_status(f"✓ Registered model sets for {group_tag}")
+
+    def register_current_consensus(self):
+        """Add the intersection of current Volcano, PLS-DA, and RF as a single set."""
+        if not all([self.volcano_result, self.plsda_result, self.rf_result]):
+            messagebox.showwarning("Warning", "Please run Volcano, PLS-DA, and Random Forest to calculate consensus!")
+            return
+            
+        pval_thresh, fc_thresh = self.pvalue_var.get(), self.fc_var.get()
+        v_fc, v_pvals = self.volcano_result['fold_changes'], self.volcano_result['pvalues']
+        volcano_features = set(self.volcano_result['feature_ids'][(v_pvals <= pval_thresh) & (np.abs(v_fc) >= np.log2(fc_thresh))])
+        
+        vips = self.plsda_result['vip_scores']
+        pls_fids = self.plsda_result.get('feature_ids', self.screened_data.iloc[:, 0].values)
+        plsda_features = set(pls_fids[vips > 1.0])
+        
+        rf_imps, rf_fids = self.rf_result['importances'], self.rf_result['feature_ids']
+        rf_features = set(rf_fids[rf_imps > 0.0])
+        
+        consensus = volcano_features & plsda_features & rf_features
+        pair_name = f"{self.volcano_result['group1']}_vs_{self.volcano_result['group2']}"
+        name = simpledialog.askstring("Register Consensus", "Enter a name for this consensus set:", initialvalue=f"Consensus_{pair_name}")
+        
+        if name:
+            self.model_comparison_sets[name] = consensus
+            self.update_model_sets_listbox()
+
+    def update_model_sets_listbox(self):
+        self.model_sets_listbox.delete(0, tk.END)
+        for name in sorted(self.model_comparison_sets.keys()):
+            self.model_sets_listbox.insert(tk.END, name)
+
+    def remove_comparison_set(self):
+        indices = self.model_sets_listbox.curselection()
+        for i in reversed(indices):
+            name = self.model_sets_listbox.get(i)
+            del self.model_comparison_sets[name]
+        self.update_model_sets_listbox()
+
+    def run_model_venn(self):
+        """Generate Venn diagram using selected registered sets."""
+        selected_indices = self.model_sets_listbox.curselection()
+        if not selected_indices:
+            # Default behavior if nothing selected: try current PLS and RF
+            if self.plsda_result is not None and self.rf_result is not None:
+                self.register_current_models()
+                selected_indices = [i for i, name in enumerate(sorted(self.model_comparison_sets.keys())) 
+                                   if "PLS-DA" in name or "RF Imp" in name]
+            else:
+                messagebox.showwarning("Warning", "Please select sets from the list or run models first!")
+                return
+
+        selected_names = [self.model_sets_listbox.get(i) for i in selected_indices]
+        self.update_status("Generating Model Comparison Venn...")
+        sets = {name: self.model_comparison_sets[name] for name in selected_names}
+        
+        if len(selected_names) <= 3:
+            self.vis_manager.create_venn_plot(
+                sets, selected_names, 
+                target_frame=self.model_venn_plot_frame, 
+                plot_key='Model Venn Diagram', 
+                plot_title="Predictive Biomarker Comparison"
+            )
+        else:
+            self.vis_manager.create_upset_plot(
+                sets, selected_names, 
+                target_frame=self.model_venn_plot_frame, 
+                plot_key='Model Venn Diagram'
+            )
+            
+        self.update_status("✓ Comparison plot generated.")
 
     def create_venn_tab(self):
         """Tab 9: Venn Diagram Analysis"""
@@ -1027,10 +1538,20 @@ class MetabolomicsApp(tk.Tk):
         
         if "Comparative" in tab_text or "Venn" in tab_text:
             self.update_venn_groups()
-        elif "UpSet" in tab_text:
-            self.update_upset_groups()
+        elif "Global Heatmap" in tab_text:
+            self.update_global_heatmap_groups()
+        elif "Heatmap (HCA)" in tab_text:
+            self.update_heatmap_groups()
+        elif "HCA Only" in tab_text:
+            self.update_hca_groups()
         elif "PCA" in tab_text:
             self.update_pca_groups()
+        elif "Screening" in tab_text or "Volcano" in tab_text:
+            self.update_volcano_feature_filters()
+        elif "PLS-DA" in tab_text:
+            self.update_plsda_groups()
+        elif "Random Forest" in tab_text:
+            self.update_rf_groups()
         elif "Feature Viewer" in tab_text:
             self.update_feature_viewer_groups()
             
@@ -1309,38 +1830,126 @@ class MetabolomicsApp(tk.Tk):
             for g in unique_groups:
                 self.venn_group_listbox.insert(tk.END, g)
                 
-    def update_upset_groups(self):
-        """Update the group list in the UpSet tab"""
-        if hasattr(self, 'upset_group_listbox') and self.group_mapping:
-            self.upset_group_listbox.delete(0, tk.END)
+    def update_global_heatmap_groups(self):
+        """Update the group list in the Global Heatmap tab"""
+        if hasattr(self, 'global_heatmap_group_listbox') and self.group_mapping:
+            current_selection = [self.global_heatmap_group_listbox.get(i) for i in self.global_heatmap_group_listbox.curselection()]
+            self.global_heatmap_group_listbox.delete(0, tk.END)
+            
             unique_groups = sorted(list(set(self.group_mapping.values())))
-            for g in unique_groups:
-                self.upset_group_listbox.insert(tk.END, g)
-                
+            for i, g in enumerate(unique_groups):
+                self.global_heatmap_group_listbox.insert(tk.END, g)
+                if g in current_selection:
+                    self.global_heatmap_group_listbox.selection_set(i)
+                    
+    def update_heatmap_groups(self):
+        """Update the group list in the Top Features Heatmap tab"""
+        if hasattr(self, 'heatmap_group_listbox') and self.group_mapping:
+            current_selection = [self.heatmap_group_listbox.get(i) for i in self.heatmap_group_listbox.curselection()]
+            self.heatmap_group_listbox.delete(0, tk.END)
+            
+            unique_groups = sorted(list(set(self.group_mapping.values())))
+            for i, g in enumerate(unique_groups):
+                self.heatmap_group_listbox.insert(tk.END, g)
+                if g in current_selection:
+                    self.heatmap_group_listbox.selection_set(i)
+
+    def update_hca_groups(self):
+        """Update the group list in the HCA Only tab."""
+        if hasattr(self, 'hca_group_listbox') and self.group_mapping:
+            current_selection = [self.hca_group_listbox.get(i) for i in self.hca_group_listbox.curselection()]
+            self.hca_group_listbox.delete(0, tk.END)
+
+            unique_groups = sorted(list(set(self.group_mapping.values())))
+            for i, g in enumerate(unique_groups):
+                self.hca_group_listbox.insert(tk.END, g)
+                if g in current_selection:
+                    self.hca_group_listbox.selection_set(i)
+                    
     def update_pca_groups(self):
         """Update the group list in the PCA tab"""
         if hasattr(self, 'pca_group_listbox') and self.group_mapping:
             current_selection = [self.pca_group_listbox.get(i) for i in self.pca_group_listbox.curselection()]
+            current_items = list(self.pca_group_listbox.get(0, tk.END))
             self.pca_group_listbox.delete(0, tk.END)
             
-            unique_groups = sorted(list(set(self.group_mapping.values())))
+            available_groups = set(self.group_mapping.values())
+            preferred_order = getattr(self, 'pca_group_order', current_items)
+            unique_groups = [g for g in preferred_order if g in available_groups]
+            unique_groups.extend(sorted(available_groups - set(unique_groups)))
+            self.pca_group_order = unique_groups.copy()
             for i, g in enumerate(unique_groups):
                 self.pca_group_listbox.insert(tk.END, g)
                 if g in current_selection:
                     self.pca_group_listbox.selection_set(i)
+                    
+    def update_plsda_groups(self):
+        """Update the group list in the PLS-DA tab"""
+        if hasattr(self, 'plsda_group_listbox') and self.group_mapping:
+            current_selection = [self.plsda_group_listbox.get(i) for i in self.plsda_group_listbox.curselection()]
+            current_items = list(self.plsda_group_listbox.get(0, tk.END))
+            self.plsda_group_listbox.delete(0, tk.END)
+            
+            unique_groups = sorted(list(set(self.group_mapping.values())))
+            valid_groups = [g for g in unique_groups if g != "Ungrouped" and 'qc' not in g.lower()]
+            available_groups = set(valid_groups)
+            preferred_order = getattr(self, 'plsda_group_order', current_items)
+            valid_groups = [g for g in preferred_order if g in available_groups]
+            valid_groups.extend(sorted(available_groups - set(valid_groups)))
+            self.plsda_group_order = valid_groups.copy()
+            
+            for i, g in enumerate(valid_groups):
+                self.plsda_group_listbox.insert(tk.END, g)
+                if g in current_selection:
+                    self.plsda_group_listbox.selection_set(i)
+                    
+    def update_rf_groups(self):
+        """Update the group list in the Random Forest tab"""
+        if hasattr(self, 'rf_group_listbox') and self.group_mapping:
+            current_selection = [self.rf_group_listbox.get(i) for i in self.rf_group_listbox.curselection()]
+            self.rf_group_listbox.delete(0, tk.END)
+            
+            unique_groups = sorted(list(set(self.group_mapping.values())))
+            valid_groups = [g for g in unique_groups if g != "Ungrouped" and 'qc' not in g.lower()]
+            
+            for i, g in enumerate(valid_groups):
+                self.rf_group_listbox.insert(tk.END, g)
+                if g in current_selection:
+                    self.rf_group_listbox.selection_set(i)
             
     def update_feature_viewer_groups(self):
         """Update the group list in the Feature Viewer tab"""
         if hasattr(self, 'fv_group_listbox') and self.group_mapping:
+            current_items = list(self.fv_group_listbox.get(0, tk.END))
             current_selection = [self.fv_group_listbox.get(i) for i in self.fv_group_listbox.curselection()]
-            self.fv_group_listbox.delete(0, tk.END)
             
             unique_groups = sorted(list(set(self.group_mapping.values())))
+            
+            if set(current_items) == set(unique_groups):
+                return  # Preserve custom order if groups are identical
+                
+            self.fv_group_listbox.delete(0, tk.END)
             for i, g in enumerate(unique_groups):
                 self.fv_group_listbox.insert(tk.END, g)
                 if g in current_selection:
                     self.fv_group_listbox.selection_set(i)
             
+    def update_volcano_feature_filters(self):
+        """Update the available feature subsets for the Volcano plot from Comparative Analysis."""
+        if not hasattr(self, 'volcano_subset_combo'): return
+        
+        current_val = getattr(self, 'volcano_subset_var', tk.StringVar()).get()
+        options = ["All Preprocessed Features"]
+        
+        if hasattr(self, 'venn_signature_map') and self.venn_signature_map:
+            for sig in self.venn_signature_map.keys():
+                options.append(f"Venn: {sig}")
+                
+        self.volcano_subset_combo['values'] = options
+        
+        if current_val not in options:
+            self.volcano_subset_var.set("All Preprocessed Features")
+
     def update_group_dropdowns(self):
         """Update the group selection dropdowns in the Volcano Plot tab, excluding QCs"""
         if hasattr(self, 'volcano_group1_combo') and hasattr(self, 'volcano_group2_combo'):
@@ -1364,38 +1973,6 @@ class MetabolomicsApp(tk.Tk):
                     elif len(non_qc_groups) == 1:
                         self.volcano_group1_var.set(non_qc_groups[0])
                         self.volcano_group2_var.set('')
-                
-                # --- Update PLS-DA Pairwise Dropdowns ---
-                if hasattr(self, 'plsda_group1_combo') and hasattr(self, 'plsda_group2_combo'):
-                    self.plsda_group1_combo['values'] = non_qc_groups
-                    self.plsda_group2_combo['values'] = non_qc_groups
-                    
-                    # Auto-select for PLS-DA if unset or invalid
-                    p_g1 = self.plsda_group1_var.get()
-                    p_g2 = self.plsda_group2_var.get()
-                    
-                    if p_g1 not in non_qc_groups or p_g2 not in non_qc_groups:
-                        if len(non_qc_groups) >= 2:
-                            self.plsda_group1_var.set(non_qc_groups[0])
-                            self.plsda_group2_var.set(non_qc_groups[1])
-                        elif len(non_qc_groups) == 1:
-                            self.plsda_group1_var.set(non_qc_groups[0])
-
-                # --- Update RF Pairwise Dropdowns ---
-                if hasattr(self, 'rf_group1_combo') and hasattr(self, 'rf_group2_combo'):
-                    self.rf_group1_combo['values'] = non_qc_groups
-                    self.rf_group2_combo['values'] = non_qc_groups
-                    
-                    # Auto-select for RF if unset or invalid
-                    r_g1 = self.rf_group1_var.get()
-                    r_g2 = self.rf_group2_var.get()
-                    
-                    if r_g1 not in non_qc_groups or r_g2 not in non_qc_groups:
-                        if len(non_qc_groups) >= 2:
-                            self.rf_group1_var.set(non_qc_groups[0])
-                            self.rf_group2_var.set(non_qc_groups[1])
-                        elif len(non_qc_groups) == 1:
-                            self.rf_group1_var.set(non_qc_groups[0])
 
     def display_data_summary(self):
         """Display data summary statistics"""
@@ -1441,8 +2018,12 @@ class MetabolomicsApp(tk.Tk):
         # Update dropdowns whenever summary updates (handles group renames/reconfigs)
         self.update_group_dropdowns()
         self.update_venn_groups()
-        self.update_upset_groups()
+        self.update_global_heatmap_groups()
+        self.update_heatmap_groups()
+        self.update_hca_groups()
         self.update_pca_groups()
+        self.update_plsda_groups()
+        self.update_rf_groups()
         self.update_feature_viewer_groups()
         
     def display_data_preview(self):
@@ -1465,7 +2046,7 @@ class MetabolomicsApp(tk.Tk):
     
     def on_rsd_filter_toggle(self):
         """Show/hide QC selection button when RSD filter is toggled"""
-        if self.filter_rsd_var.get():
+        if self.filter_rsd_var.get() or self.filter_qc_presence_var.get():
             self.qc_select_frame.grid()
         else:
             self.qc_select_frame.grid_remove()
@@ -1626,6 +2207,80 @@ class MetabolomicsApp(tk.Tk):
                     foreground="gray"
                 )
     
+    # ==================== Group Configuration Export/Import ====================
+    
+    def export_group_config(self):
+        """Export the current group configuration to a CSV file"""
+        if not self.sample_names:
+            messagebox.showwarning("Warning", "Please load data first!")
+            return
+            
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            initialfile="group_configuration.csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+        
+        if filepath:
+            try:
+                rows = []
+                for sample in self.sample_names:
+                    group = self.group_mapping.get(sample, "Ungrouped")
+                    color = self.group_colors.get(group, "#CCCCCC")
+                    rows.append({"Sample": sample, "Group": group, "Color": color})
+                
+                pd.DataFrame(rows).to_csv(filepath, index=False)
+                messagebox.showinfo("Success", f"✓ Group configuration exported to:\n{filepath}")
+                self.update_status("Group configuration exported")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to export group configuration:\n{str(e)}")
+
+    def import_group_config(self):
+        """Import group configuration from a CSV file"""
+        if not self.sample_names:
+            messagebox.showwarning("Warning", "Please load data first!")
+            return False
+            
+        filepath = filedialog.askopenfilename(
+            title="Select Group Configuration CSV",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+        
+        if filepath:
+            try:
+                df = pd.read_csv(filepath)
+                if "Sample" not in df.columns or "Group" not in df.columns:
+                    messagebox.showerror("Error", "CSV must contain 'Sample' and 'Group' columns!")
+                    return False
+                
+                imported_count = 0
+                for _, row in df.iterrows():
+                    sample = str(row["Sample"])
+                    group = str(row["Group"])
+                    if sample in self.sample_names:
+                        self.group_mapping[sample] = group
+                        imported_count += 1
+                        if "Color" in df.columns and pd.notna(row["Color"]):
+                            self.group_colors[group] = str(row["Color"])
+                
+                # Ensure all groups have colors
+                for group in set(self.group_mapping.values()):
+                    if group not in self.group_colors:
+                        default_colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8', 
+                                         '#F7DC6F', '#BB8FCE', '#85C1E2', '#F8B739', '#52B788']
+                        self.group_colors[group] = default_colors[len(self.group_colors) % len(default_colors)]
+                
+                self.auto_detect_qc_samples()
+                self.display_data_summary()
+                
+                messagebox.showinfo("Success", f"✓ Imported configuration for {imported_count} samples!")
+                self.update_status("Group configuration imported")
+                return True
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to import group configuration:\n{str(e)}")
+                return False
+        return False
+
     # ==================== Group Configuration ====================
     
     def configure_groups(self):
@@ -1653,8 +2308,9 @@ class MetabolomicsApp(tk.Tk):
             text="1. Select group from dropdown for each sample\n"
                  "2. Type new group name in dropdown to create new group\n"
                  "3. Click color button to customize group color\n"
-                 "4. Click 'Save' when finished\n"
-                 "💡 Tip: Name QC samples' group as 'QC' for auto-detection",
+                 "4. Click 'Save' when finished\n\n"
+                 "💡 Tip: Name QC samples' group as 'QC' for auto-detection\n"
+                 "💡 Tip: You can Import/Export group configs from the Edit menu.",
             font=('Arial', 9),
             foreground='#555555'
         ).pack(anchor='w', pady=5)
@@ -1777,6 +2433,23 @@ class MetabolomicsApp(tk.Tk):
             text="❌ Cancel",
             command=config_window.destroy
         ).pack(side='left', padx=5)
+        
+        def run_import_and_refresh():
+            if self.import_group_config():
+                config_window.destroy()
+                self.configure_groups()
+
+        ttk.Button(
+            button_frame,
+            text="📤 Export Config",
+            command=self.export_group_config
+        ).pack(side='right', padx=5)
+
+        ttk.Button(
+            button_frame,
+            text="📥 Import Config",
+            command=run_import_and_refresh
+        ).pack(side='right', padx=5)
     
     def choose_group_color_inline(self, group_name, parent_window, group_vars, color_buttons):
         """Choose color for a group"""
@@ -1942,20 +2615,29 @@ class MetabolomicsApp(tk.Tk):
     def filter_by_detection_rate(self, data, threshold=80.0):
         """
         Filter features based on detection rate per group
-        Reference: Gowda et al. (2014) Metabolomics
-        Keep features detected in ≥threshold% of samples in at least one group
+        Keep features detected in ≥threshold% of samples in at least one group (biological or QC).
         """
         sample_cols = [col for col in data.columns if '.mzML' in col]
-        metadata_cols = [col for col in data.columns if col not in sample_cols]
         
         # Group samples
         groups = {}
         for col in sample_cols:
             base_name = re.sub(r'_(\d+|avg)\.mzML.*', '', col)
             group = self.group_mapping.get(base_name, "Ungrouped")
+
+            # The user requested that the 80% rule should also apply to QC samples.
+            # This means QC samples are now included in the grouping for detection rate calculation.
+            # If a feature passes the detection rate in a QC group, it will be kept.
+            # The previous exclusion logic for QC samples has been removed.
+
             if group not in groups:
                 groups[group] = []
             groups[group].append(col)
+            
+        if not groups:
+            # Safety check: if no biological groups are defined, skip filter 
+            # rather than deleting the whole dataset.
+            return data, 0
         
         # Calculate detection rate per group
         keep_features = []
@@ -1966,6 +2648,10 @@ class MetabolomicsApp(tk.Tk):
             for group_name, group_cols in groups.items():
                 group_values = feature_row[group_cols].values
                 detected = np.sum(group_values > 0)
+                
+                # Ensure we don't divide by zero if a group has no samples
+                if len(group_values) == 0:
+                    continue
                 detection_rate = (detected / len(group_values)) * 100
                 
                 if detection_rate >= threshold:
@@ -2045,6 +2731,40 @@ class MetabolomicsApp(tk.Tk):
         
         return filtered_data, removed
     
+    def filter_by_qc_presence(self, data, min_pct=80.0):
+        """
+        Filter features based on presence in QC samples.
+        Features must be detected (>0) in at least min_pct% of QC samples.
+        """
+        if not self.qc_samples:
+            messagebox.showinfo("Info", "No QC samples selected. QC Presence filtering skipped.")
+            return data, 0
+            
+        sample_cols = [col for col in data.columns if '.mzML' in col]
+        
+        # Get QC sample columns
+        qc_columns = []
+        for qc_sample in self.qc_samples:
+            if qc_sample in self.replicate_mapping:
+                reps = self.replicate_mapping[qc_sample]
+                qc_cols = [col for col, _ in reps if col in sample_cols]
+                qc_columns.extend(qc_cols)
+        
+        if not qc_columns:
+            return data, 0
+            
+        keep_features = []
+        for idx in range(len(data)):
+            qc_values = data.iloc[idx][qc_columns].values
+            detected_count = np.sum(qc_values > 0)
+            presence_pct = (detected_count / len(qc_columns)) * 100
+            
+            if presence_pct >= min_pct:
+                keep_features.append(idx)
+                
+        filtered_data = data.iloc[keep_features].reset_index(drop=True)
+        return filtered_data, len(data) - len(filtered_data)
+
     def filter_by_iqr(self, data, factor=0.5):
         """
         Filter features with low interquartile range (low variance)
@@ -2076,7 +2796,7 @@ class MetabolomicsApp(tk.Tk):
         
         return filtered_data, removed
     
-    def normalize_data_local(self, data, method='tic'):
+    def normalize_data_local(self, data, method='none'):
         """Apply normalization to sample columns"""
         sample_cols = [col for col in data.columns if '.mzML' in col]
         metadata_cols = [col for col in data.columns if col not in sample_cols]
@@ -2089,22 +2809,10 @@ class MetabolomicsApp(tk.Tk):
         
         method = method.lower()
         
-        if method == 'tic':
-            column_sums = sample_data.sum(axis=0)
-            normalized = sample_data / column_sums * column_sums.mean()
-        elif method == 'median':
-            column_medians = sample_data.median(axis=0)
-            normalized = sample_data / column_medians * column_medians.mean()
-        elif method == 'log':
+        if method == 'log':
+            normalized = np.log10(sample_data + 1)
+        elif method == 'log2':
             normalized = np.log2(sample_data + 1)
-        elif method == 'pareto':
-            means = sample_data.mean(axis=0)
-            stds = sample_data.std(axis=0)
-            normalized = (sample_data - means) / np.sqrt(stds)
-        elif method == 'auto':
-            means = sample_data.mean(axis=0)
-            stds = sample_data.std(axis=0)
-            normalized = (sample_data - means) / stds
         else:
             normalized = sample_data
         
@@ -2137,28 +2845,6 @@ class MetabolomicsApp(tk.Tk):
             else:
                 results.append("\n✗ Skipped replicate averaging")
             
-            # Step 1.5: Missing Value Imputation
-            if getattr(self, 'impute_lod_var', tk.BooleanVar(value=False)).get():
-                fraction_str = self.lod_fraction_var.get()
-                if "1/2" in fraction_str: fraction = 0.5
-                elif "1/3" in fraction_str: fraction = 1.0 / 3.0
-                elif "1/4" in fraction_str: fraction = 0.25
-                else: fraction = 0.2
-                
-                results.append("\n" + "─" * 60)
-                results.append("MISSING VALUE IMPUTATION")
-                results.append("─" * 60)
-                results.append(f"✓ Applying LOD Imputation (fraction={fraction:.2f})")
-                
-                # Count missing before
-                sample_cols_temp = [c for c in working_data.columns if '.mzML' in c]
-                zero_count = (working_data[sample_cols_temp] == 0).sum().sum()
-                nan_count = working_data[sample_cols_temp].isna().sum().sum()
-                results.append(f"  Found {zero_count} zeros and {nan_count} NaNs")
-                
-                working_data = self.apply_lod_imputation(working_data, fraction)
-                results.append("  Imputation complete")
-            
             # Step 2: Feature Filtering
             results.append("\n" + "─" * 60)
             results.append("FEATURE FILTERING")
@@ -2182,6 +2868,14 @@ class MetabolomicsApp(tk.Tk):
                 results.append(f"✓ Min intensity filter (≥{threshold}): removed {removed} features")
                 results.append(f"  Remaining: {len(working_data)} features")
             
+            # QC presence filter
+            if self.filter_qc_presence_var.get():
+                min_pct = self.qc_presence_threshold_var.get()
+                working_data, removed = self.filter_by_qc_presence(working_data, min_pct)
+                total_removed += removed
+                results.append(f"✓ QC Presence filter (≥{min_pct}%): removed {removed} features")
+                results.append(f"  Remaining: {len(working_data)} features")
+
             # QC RSD filter
             if self.filter_rsd_var.get():
                 max_rsd = self.rsd_threshold_var.get()
@@ -2207,6 +2901,27 @@ class MetabolomicsApp(tk.Tk):
             else:
                 results.append(f"\n📊 Total features removed: {total_removed} ({total_removed/initial_features*100:.1f}%)")
             
+            # Step 2.5: Missing Value Imputation (Now AFTER filtering)
+            if getattr(self, 'impute_lod_var', tk.BooleanVar(value=False)).get():
+                fraction_str = str(self.lod_fraction_var.get())
+                if "1/2" in fraction_str: fraction = 0.5
+                elif "1/3" in fraction_str: fraction = 1.0 / 3.0
+                elif "1/4" in fraction_str: fraction = 0.25
+                else: fraction = 0.2
+                
+                results.append("\n" + "─" * 60)
+                results.append("MISSING VALUE IMPUTATION")
+                results.append("─" * 60)
+                
+                # Count missing before
+                sample_cols_temp = [c for c in working_data.columns if '.mzML' in c]
+                zero_count = (working_data[sample_cols_temp] == 0).sum().sum()
+                nan_count = working_data[sample_cols_temp].isna().sum().sum()
+                results.append(f"✓ Applying LOD Imputation to {zero_count} zeros and {nan_count} NaNs")
+                
+                working_data = self.apply_lod_imputation(working_data, fraction)
+                results.append("  Imputation complete")
+
             # Store data before normalization
             self.data_before_norm = working_data.copy()
             
@@ -2299,14 +3014,39 @@ class MetabolomicsApp(tk.Tk):
         try:
             self.update_status("Running PCA...")
             
+            # Apply manual feature filter if enabled
+            data_to_use = self.preprocessed_data
+            if self.pca_filter_enabled_var.get():
+                filter_input = self.pca_filter_text.get('1.0', tk.END).strip()
+                if filter_input:
+                    # IDs are space or newline separated
+                    target_ids = set(filter_input.split())
+                    feature_col = data_to_use.columns[0]
+                    
+                    # Flexible matching: match full Feature_ID or just the numeric Row ID prefix
+                    def match_id(fid):
+                        fid_str = str(fid)
+                        return fid_str in target_ids or fid_str.split('_')[0] in target_ids
+                    
+                    mask = data_to_use[feature_col].apply(match_id)
+                    filtered_data = data_to_use[mask].reset_index(drop=True)
+                    
+                    if len(filtered_data) < 2:
+                        messagebox.showwarning("Warning", f"Only {len(filtered_data)} features matched the filter list. PCA requires at least 2 features to run. Using all features instead.")
+                    else:
+                        data_to_use = filtered_data
+                        self.update_status(f"Running PCA with {len(data_to_use)} manual features...")
+
             selected_indices = self.pca_group_listbox.curselection()
             selected_groups = [self.pca_group_listbox.get(i) for i in selected_indices]
+            self.pca_group_order = list(self.pca_group_listbox.get(0, tk.END))
             
             n_components = self.pca_components_var.get()
-            pca_result = self.perform_pca_local(self.preprocessed_data, n_components, selected_groups)
+            pca_result = self.perform_pca_local(data_to_use, n_components, selected_groups)
             
             # Assign groups to PCA samples
             pca_result = self.assign_groups_to_pca(pca_result)
+            pca_result['group_order'] = self.pca_group_order.copy()
             
             # PERMANOVA Calculation
             if getattr(self, 'pca_permanova_var', None) and self.pca_permanova_var.get():
@@ -2489,7 +3229,10 @@ class MetabolomicsApp(tk.Tk):
         scatters = [] # Keep track of scatter objects for hover interactions
         
         if groups:
-            unique_groups = sorted(set(groups))
+            configured_order = pca_result.get('group_order', getattr(self, 'pca_group_order', []))
+            present_groups = set(groups)
+            unique_groups = [group for group in configured_order if group in present_groups]
+            unique_groups.extend(sorted(present_groups - set(unique_groups)))
             
             for group in unique_groups:
                 group_indices = [i for i, g in enumerate(groups) if g == group]
@@ -2647,21 +3390,42 @@ class MetabolomicsApp(tk.Tk):
         if group1 == group2:
             messagebox.showwarning("Warning", "Group 1 and Group 2 must be different!")
             return
+            
+        subset_selection = getattr(self, 'volcano_subset_var', tk.StringVar(value="All Preprocessed Features")).get()
         
+        if subset_selection == "All Preprocessed Features":
+            input_data = self.preprocessed_data
+        elif subset_selection.startswith("Venn: "):
+            sig = subset_selection.replace("Venn: ", "")
+            features = getattr(self, 'venn_signature_map', {}).get(sig, [])
+            input_data = self.preprocessed_data[self.preprocessed_data.iloc[:, 0].isin(features)].reset_index(drop=True)
+        elif subset_selection.startswith("UpSet: "):
+            sig = subset_selection.replace("UpSet: ", "")
+            features = getattr(self, 'upset_signature_map', {}).get(sig, [])
+            input_data = self.preprocessed_data[self.preprocessed_data.iloc[:, 0].isin(features)].reset_index(drop=True)
+        else:
+            input_data = self.preprocessed_data
+            
+        if len(input_data) == 0:
+            messagebox.showwarning("Warning", "The selected feature subset is empty! Please select a valid subset or generate the comparative analysis first.")
+            return
+            
         try:
             self.update_status("Creating volcano plot...")
             
             pval_thresh = self.pvalue_var.get()
             fc_thresh = self.fc_var.get()
             correction_method = self.correction_method_var.get()
+            norm_method = self.norm_method_var.get()
             
             volcano_result = self.perform_volcano_analysis(
-                self.preprocessed_data, 
+                input_data, 
                 group1,
                 group2,
                 pval_thresh, 
                 fc_thresh,
-                correction_method
+                correction_method,
+                norm_method
             )
             
             self.volcano_result = volcano_result
@@ -2676,7 +3440,7 @@ class MetabolomicsApp(tk.Tk):
             messagebox.showerror("Error", f"Volcano plot failed:\n{str(e)}\n\nDetails:\n{error_detail}")
             self.update_status("Error in volcano plot")
     
-    def perform_volcano_analysis(self, data, group1, group2, pval_thresh=0.05, fc_thresh=2.0, correction_method='None'):
+    def perform_volcano_analysis(self, data, group1, group2, pval_thresh=0.05, fc_thresh=2.0, correction_method='None', norm_method='None'):
         """Perform differential analysis for volcano plot"""
         sample_cols = [col for col in data.columns if '.mzML' in col]
         
@@ -2721,15 +3485,30 @@ class MetabolomicsApp(tk.Tk):
             mean1 = np.mean(g1_vals) if len(g1_vals) > 0 else 0
             mean2 = np.mean(g2_vals) if len(g2_vals) > 0 else 0
             
-            # Fold change (log2)
-            fc = np.log2((mean2 + 1) / (mean1 + 1))
+            # Correctly calculate Fold Change based on normalization method
+            if norm_method == 'Log': # This is log10
+                # Data is log10 transformed. Difference of means is log10(FC).
+                fc_log10 = mean2 - mean1
+                # Convert to log2(FC) for volcano plot (log_b(x) = log_d(x) / log_d(b))
+                fc = fc_log10 / np.log10(2)
+            elif norm_method == 'Log2':
+                # Data is log2 transformed. Difference of means is log2(FC).
+                fc = mean2 - mean1
+            else: # 'None' or other methods that keep data on intensity scale
+                # Original calculation for raw intensities
+                fc = np.log2((mean2 + 1) / (mean1 + 1))
             fold_changes.append(fc)
             
             # T-test (requires at least 2 non-NaN values per group)
             if len(g1_vals) >= 2 and len(g2_vals) >= 2:
-                # Check for zero variance to avoid Runtime Errors
-                if np.var(g1_vals) == 0 and np.var(g2_vals) == 0 and mean1 == mean2:
-                    pvalues.append(1.0)
+                var1, var2 = np.var(g1_vals), np.var(g2_vals)
+                # Check for zero variance to avoid Runtime Errors or NaNs
+                if np.isclose(var1, 0) and np.isclose(var2, 0):
+                    if np.isclose(mean1, mean2):
+                        pvalues.append(1.0)
+                    else:
+                        # Perfect separation with zero technical variance
+                        pvalues.append(np.finfo(float).tiny)
                 else:
                     try:
                         _, pval = stats.ttest_ind(g1_vals, g2_vals, equal_var=False)
@@ -2907,20 +3686,19 @@ class MetabolomicsApp(tk.Tk):
             n_components = self.plsda_components_var.get()
             exclude_qc = self.plsda_exclude_qc_var.get()
             
-            # Check pairwise settings
-            specific_groups = None
-            if self.plsda_pairwise_var.get():
-                g1 = self.plsda_group1_var.get()
-                g2 = self.plsda_group2_var.get()
-                if not g1 or not g2:
-                    messagebox.showwarning("Warning", "Please select both groups for pairwise comparison.")
+            # Check selected groups
+            selected_indices = getattr(self, 'plsda_group_listbox', tk.Listbox()).curselection()
+            self.plsda_group_order = list(self.plsda_group_listbox.get(0, tk.END))
+            if selected_indices:
+                specific_groups = [self.plsda_group_listbox.get(i) for i in selected_indices]
+                if len(specific_groups) < 2:
+                    messagebox.showwarning("Warning", "Please select at least 2 groups for PLS-DA.")
                     return
-                if g1 == g2:
-                    messagebox.showwarning("Warning", "Groups must be different.")
-                    return
-                specific_groups = [g1, g2]
+            else:
+                specific_groups = None
 
             plsda_result = self.perform_plsda_local(self.screened_data, n_components, exclude_qc, specific_groups)
+            plsda_result['group_order'] = self.plsda_group_order.copy()
             
             self.plsda_result = plsda_result
             self.display_plsda_results(plsda_result)
@@ -3032,30 +3810,39 @@ class MetabolomicsApp(tk.Tk):
         vip_scores = self.calculate_vip_scores(plsda, X_scaled, Y_pls)
         
         # Cross-validation setup
-        if len(y_cls) >= 10 and min(np.bincount(y_cls)) >= 2:
+        if len(y_cls) >= 15 and min(np.bincount(y_cls)) >= 3:
             from sklearn.model_selection import StratifiedKFold
-            skf = StratifiedKFold(n_splits=min(5, min(np.bincount(y_cls))))
+            skf = StratifiedKFold(n_splits=min(7, min(np.bincount(y_cls))), shuffle=True, random_state=42)
             cv_method = list(skf.split(X_scaled, y_cls))
         else:
             from sklearn.model_selection import LeaveOneOut
             cv_method = LeaveOneOut()
 
-        Y_cv_actual = cross_val_predict(plsda, X_scaled, Y_pls, cv=cv_method)
+        from sklearn.pipeline import make_pipeline
+        pls_pipeline = make_pipeline(StandardScaler(), PLSRegression(n_components=n_components))
+
+        Y_cv_actual = cross_val_predict(pls_pipeline, X, Y_pls, cv=cv_method)
         q2_y = calculate_block_variance(Y_pls, Y_cv_actual)
 
-        cv_scores = cross_val_score(
-            RandomForestClassifier(n_estimators=100, random_state=42),
-            X_scaled, y_cls, cv=cv_method
-        )
+        # Convert continuous PLS-DA CV predictions back to discrete classes
+        if len(unique_groups) == 2:
+            # Binary classification: Threshold at 0.5
+            Y_cv_class = np.where(Y_cv_actual > 0.5, 1, 0)
+            cv_accuracy = np.mean(Y_cv_class == Y_pls)
+        else:
+            # Multi-class: Take the highest prediction across dummy columns
+            Y_cv_class = np.argmax(Y_cv_actual, axis=1)
+            Y_true_class = np.argmax(Y_pls, axis=1)
+            cv_accuracy = np.mean(Y_cv_class == Y_true_class)
         
         return {
             'scores': scores,
             'vip_scores': vip_scores,
-            'cv_accuracy': cv_scores.mean(),
-            'cv_std': cv_scores.std(),
+            'cv_accuracy': cv_accuracy,
             'r2_x': r2_x,
             'r2_y': r2_y,
             'q2_y': q2_y,
+            'feature_ids': data.iloc[:, 0].values,
             'sample_names': sample_cols,
             'groups': y_labels,
             'model': plsda
@@ -3073,7 +3860,7 @@ class MetabolomicsApp(tk.Tk):
         
         # Calculate explained variance of Y for each component
         # Works for both single-class (1D) and multi-class (2D) Y
-        s = np.sum(t ** 2, axis=0) * np.sum(q ** 2, axis=1)
+        s = np.sum(t ** 2, axis=0) * np.sum(q ** 2, axis=0)
         total_s = np.sum(s)
         
         w_norm_sq = np.sum(w ** 2, axis=0)
@@ -3097,7 +3884,7 @@ class MetabolomicsApp(tk.Tk):
         text.append(f"R²X (Explained Var. X):   {result.get('r2_x', 0):.3f}")
         text.append(f"R²Y (Goodness of Fit):    {result.get('r2_y', 0):.3f}")
         text.append(f"Q²  (Predictability):     {result.get('q2_y', 0):.3f}")
-        text.append(f"RF CV Accuracy:           {result['cv_accuracy']:.3f} ± {result['cv_std']:.3f}")
+        text.append(f"PLS-DA CV Accuracy:       {result['cv_accuracy']:.3f}")
         text.append(f"\nTop 10 VIP Scores (VIP > 1.0 indicates important features):")
         text.append("-" * 60)
         
@@ -3125,7 +3912,10 @@ class MetabolomicsApp(tk.Tk):
         # === Left Subplot: PLS-DA Score Plot ===
         ax1 = fig.add_subplot(121)
         groups = result['groups']
-        unique_groups = sorted(set(groups))
+        configured_order = result.get('group_order', getattr(self, 'plsda_group_order', []))
+        present_groups = set(groups)
+        unique_groups = [group for group in configured_order if group in present_groups]
+        unique_groups.extend(sorted(present_groups - set(unique_groups)))
         
         def add_confidence_ellipse(x, y, ax, color):
             """Calculates and draws a 95% confidence ellipse"""
@@ -3285,7 +4075,7 @@ class MetabolomicsApp(tk.Tk):
             # Optimize CV approach based on sample size
             if len(y_labels) >= 15 and min(np.bincount(y_1d_corr)) >= 3:
                 from sklearn.model_selection import StratifiedKFold
-                skf = StratifiedKFold(n_splits=min(7, min(np.bincount(y_1d_corr))))
+                skf = StratifiedKFold(n_splits=min(7, min(np.bincount(y_1d_corr))), shuffle=True, random_state=42)
                 cv = list(skf.split(X_scaled, y_1d_corr))
             else:
                 from sklearn.model_selection import LeaveOneOut
@@ -3311,7 +4101,10 @@ class MetabolomicsApp(tk.Tk):
             r2_actual = calculate_block_variance(Y_mat, Y_pred_actual)
             
             # Get actual Q2 via Cross-Validation
-            Y_cv_actual = cross_val_predict(pls_val, X_scaled, Y_mat, cv=cv)
+            from sklearn.pipeline import make_pipeline
+            pls_pipeline = make_pipeline(StandardScaler(), PLSRegression(n_components=n_components))
+            
+            Y_cv_actual = cross_val_predict(pls_pipeline, X, Y_mat, cv=cv)
             q2_actual = calculate_block_variance(Y_mat, Y_cv_actual)
             
             r2_perms = []
@@ -3324,7 +4117,7 @@ class MetabolomicsApp(tk.Tk):
                 Y_mat_perm = Y_mat[shuffle_idx]
                 y_1d_perm = y_1d_corr[shuffle_idx]
                 
-                corr = np.corrcoef(y_1d_corr, y_1d_perm)[0, 1]
+                corr = np.abs(np.corrcoef(y_1d_corr, y_1d_perm)[0, 1])
                 if np.isnan(corr): corr = 0
                 corrs.append(corr)
                 
@@ -3335,24 +4128,9 @@ class MetabolomicsApp(tk.Tk):
                     
                 r2_perms.append(calculate_block_variance(Y_mat_perm, Y_pred_perm))
                 
-                Y_cv_perm = cross_val_predict(pls_val, X_scaled, Y_mat_perm, cv=cv)
+                Y_cv_perm = cross_val_predict(pls_pipeline, X, Y_mat_perm, cv=cv)
                 q2_perms.append(calculate_block_variance(Y_mat_perm, Y_cv_perm))
                 
-            # --- 6. Render Validation Plot ---
-            for widget in getattr(self, 'pls_val_plot_frame', tk.Frame()).winfo_children():
-                widget.destroy()
-                
-            w, h, dpi = self.plot_width_var.get(), self.plot_height_var.get(), self.plot_dpi_var.get()
-            fig = Figure(figsize=(w, h), dpi=dpi)
-            self.generated_plots['PLS-DA Validation'] = fig
-            ax = fig.add_subplot(111)
-            
-            ax.scatter(corrs, r2_perms, color='#1f77b4', alpha=0.6, label='R² (Permuted)')
-            ax.scatter(corrs, q2_perms, color='#2ca02c', alpha=0.6, label='Q² (Permuted)')
-            
-            ax.scatter([1.0], [r2_actual], color='#1f77b4', marker='*', s=150, label='R² (Actual)')
-            ax.scatter([1.0], [q2_actual], color='#2ca02c', marker='*', s=150, label='Q² (Actual)')
-            
             all_corrs = corrs + [1.0]
             all_r2 = r2_perms + [r2_actual]
             all_q2 = q2_perms + [q2_actual]
@@ -3362,10 +4140,6 @@ class MetabolomicsApp(tk.Tk):
                 p_r2 = np.poly1d(z_r2)
                 z_q2 = np.polyfit(all_corrs, all_q2, 1)
                 p_q2 = np.poly1d(z_q2)
-                
-                x_line = np.linspace(min(corrs + [0]), 1.0, 50)
-                ax.plot(x_line, p_r2(x_line), color='#1f77b4', linestyle='--')
-                ax.plot(x_line, p_q2(x_line), color='#2ca02c', linestyle='--')
                 
                 r2_int = p_r2(0)
                 q2_int = p_q2(0)
@@ -3381,22 +4155,7 @@ class MetabolomicsApp(tk.Tk):
                 'p_val': p_val, 'n_perms': n_perms
             }
             
-            title = (f"PLS-DA Permutation Test (n={n_perms})\n"
-                     f"R²Y = {r2_actual:.3f}, Q² = {q2_actual:.3f}\n"
-                     f"R² int = {r2_int:.3f}, Q² int = {q2_int:.3f} | p-value = {p_val:.3f}")
-            ax.set_title(title, fontsize=12, fontweight='bold')
-            ax.set_xlabel("Correlation between permuted and original Y", fontsize=11)
-            ax.set_ylabel("Score (R² / Q²)", fontsize=11)
-            ax.legend(loc='best')
-            ax.grid(True, linestyle=':', alpha=0.6)
-            fig.tight_layout()
             self.vis_manager.create_pls_val_plot(perm_results)
-            
-            canvas = FigureCanvasTkAgg(fig, master=self.pls_val_plot_frame)
-            canvas.draw()
-            canvas.get_tk_widget().pack(fill='both', expand=True)
-            toolbar = NavigationToolbar2Tk(canvas, self.pls_val_plot_frame)
-            toolbar.update()
             
             self.update_status("✓ PLS Validation complete")
             messagebox.showinfo("Success", f"Validation complete!\n\nR²Y: {r2_actual:.3f}\nQ²: {q2_actual:.3f}\nEmpirical p-value: {p_val:.3f}")
@@ -3408,33 +4167,6 @@ class MetabolomicsApp(tk.Tk):
             self.update_status("Error in PLS Validation")
     
     # ==================== Random Forest ====================
-    
-    def run_rf(self):
-        """Run Random Forest analysis"""
-        if getattr(self, 'screened_data', None) is None:
-            messagebox.showwarning("Warning", "Please run preprocessing (and optional Univariate Screening) first!")
-            return
-        
-        try:
-            self.update_status("Running Random Forest...")
-            
-            n_trees = self.ntrees_var.get()
-            top_n = self.top_n_var.get()
-            exclude_qc = getattr(self, 'rf_exclude_qc_var', tk.BooleanVar(value=True)).get()
-            
-            rf_result = self.perform_rf_analysis(self.screened_data, n_trees, top_n, exclude_qc)
-            
-            self.rf_result = rf_result
-            self.display_rf_results(rf_result)
-            self.create_rf_plot(rf_result)
-            
-            self.update_status("✓ Random Forest complete")
-            
-        except Exception as e:
-            import traceback
-            error_detail = traceback.format_exc()
-            messagebox.showerror("Error", f"Random Forest failed:\n{str(e)}\n\nDetails:\n{error_detail}")
-            self.update_status("Error in Random Forest")
     
     def perform_rf_analysis(self, data, n_trees=500, top_n=20, exclude_qc=True, specific_groups=None, calc_roc=False):
         """Perform Random Forest feature selection"""
@@ -3450,8 +4182,10 @@ class MetabolomicsApp(tk.Tk):
                     continue
                 
                 # Exclude if explicitly in qc_samples OR if its group name suggests it's QC
-                if base_name not in getattr(self, 'qc_samples', []) and 'qc' not in group_name.lower():
-                    filtered_cols.append(col)
+                if exclude_qc and (base_name in getattr(self, 'qc_samples', []) or 'qc' in group_name.lower()):
+                    continue
+                    
+                filtered_cols.append(col)
             sample_cols = filtered_cols
             
         if len(sample_cols) < 2:
@@ -3479,18 +4213,22 @@ class MetabolomicsApp(tk.Tk):
         le = LabelEncoder()
         y = le.fit_transform(y_labels)
         
+        if min(np.bincount(y)) < 2:
+            raise ValueError("Random Forest requires at least 2 samples per group for cross-validation.")
+        
         # Scale features
         scaler = StandardScaler()
         X_scaled = scaler.fit_transform(X)
         
         # Fit Random Forest (using oob_score for evaluation)
         try:
-            rf = RandomForestClassifier(n_estimators=n_trees, oob_score=True, random_state=42)
+            rf = RandomForestClassifier(n_estimators=n_trees, oob_score=True, class_weight='balanced', random_state=42)
+            # rf.feature_importances_ calculates Mean Decrease Gini (MDG)
             rf.fit(X_scaled, y)
             oob_error = 1.0 - getattr(rf, 'oob_score_', float('nan'))
         except Exception:
             # Fallback if too few samples for OOB scoring
-            rf = RandomForestClassifier(n_estimators=n_trees, random_state=42)
+            rf = RandomForestClassifier(n_estimators=n_trees, class_weight='balanced', random_state=42)
             rf.fit(X_scaled, y)
             oob_error = float('nan')
         
@@ -3506,19 +4244,19 @@ class MetabolomicsApp(tk.Tk):
         
         # Cross-validation setup
         cv_method = min(5, min(np.bincount(y)))
-        if cv_method < 2:
-            from sklearn.model_selection import LeaveOneOut
-            cv_folds = LeaveOneOut()
-        else:
-            from sklearn.model_selection import StratifiedKFold
-            cv_folds = StratifiedKFold(n_splits=cv_method)
+        from sklearn.model_selection import StratifiedKFold
+        cv_folds = StratifiedKFold(n_splits=cv_method, shuffle=True, random_state=42)
             
-        cv_scores = cross_val_score(rf, X_scaled, y, cv=cv_folds)
+        # Use a Pipeline to prevent data leakage from scaling during cross-validation
+        from sklearn.pipeline import make_pipeline
+        rf_pipeline = make_pipeline(StandardScaler(), RandomForestClassifier(n_estimators=n_trees, class_weight='balanced', random_state=42))
+        
+        cv_scores = cross_val_score(rf_pipeline, X, y, cv=cv_folds)
         
         roc_data = None
         if calc_roc and len(unique_groups) == 2:
             from sklearn.metrics import roc_curve, auc
-            y_prob = cross_val_predict(rf, X_scaled, y, cv=cv_folds, method="predict_proba")[:, 1]
+            y_prob = cross_val_predict(rf_pipeline, X, y, cv=cv_folds, method="predict_proba")[:, 1]
             fpr, tpr, _ = roc_curve(y, y_prob)
             roc_data = {
                 'fpr': fpr,
@@ -3532,6 +4270,7 @@ class MetabolomicsApp(tk.Tk):
             'importances': importances,
             'feature_ids': feature_ids,
             'top_features': top_features,
+            'groups': y_labels,
             'cv_accuracy': cv_scores.mean(),
             'cv_std': cv_scores.std(),
             'oob_error': oob_error,
@@ -3555,17 +4294,15 @@ class MetabolomicsApp(tk.Tk):
             exclude_qc = getattr(self, 'rf_exclude_qc_var', tk.BooleanVar(value=True)).get()
             calc_roc = getattr(self, 'rf_roc_var', tk.BooleanVar(value=True)).get()
             
-            specific_groups = None
-            if getattr(self, 'rf_pairwise_var', tk.BooleanVar(value=False)).get():
-                g1 = getattr(self, 'rf_group1_var', tk.StringVar()).get()
-                g2 = getattr(self, 'rf_group2_var', tk.StringVar()).get()
-                if not g1 or not g2:
-                    messagebox.showwarning("Warning", "Please select both groups for pairwise comparison.")
+            # Check selected groups
+            selected_indices = getattr(self, 'rf_group_listbox', tk.Listbox()).curselection()
+            if selected_indices:
+                specific_groups = [self.rf_group_listbox.get(i) for i in selected_indices]
+                if len(specific_groups) < 2:
+                    messagebox.showwarning("Warning", "Please select at least 2 groups for Random Forest.")
                     return
-                if g1 == g2:
-                    messagebox.showwarning("Warning", "Groups must be different.")
-                    return
-                specific_groups = [g1, g2]
+            else:
+                specific_groups = None
             
             rf_result = self.perform_rf_analysis(self.screened_data, n_trees, top_n, exclude_qc, specific_groups, calc_roc)
             
@@ -3575,6 +4312,72 @@ class MetabolomicsApp(tk.Tk):
             
             self.update_status("✓ Random Forest complete")
             
+        except Exception as e:
+            import traceback
+            error_detail = traceback.format_exc()
+            messagebox.showerror("Error", f"Random Forest failed:\n{str(e)}\n\nDetails:\n{error_detail}")
+            self.update_status("Error in Random Forest")
+
+    def run_rf_permutation(self):
+        """Run label-shuffling permutation test for RF validation"""
+        if getattr(self, 'screened_data', None) is None:
+            messagebox.showwarning("Warning", "Please run preprocessing first!")
+            return
+        
+        try:
+            self.update_status("Running RF Permutation Test (n=100)...")
+            self.update_idletasks()
+
+            # 1. Data Prep (similar to run_rf)
+            sample_cols = [col for col in self.screened_data.columns if '.mzML' in col]
+            if self.rf_exclude_qc_var.get():
+                sample_cols = [c for c in sample_cols if c.replace('_avg', '') not in self.qc_samples]
+            
+            X = self.screened_data[sample_cols].T.fillna(0)
+            y_labels = [self.group_mapping.get(re.sub(r'_(\d+|avg)\.mzML.*', '', c), "Ungrouped") for c in sample_cols]
+            
+            le = LabelEncoder()
+            y = le.fit_transform(y_labels)
+            X_scaled = StandardScaler().fit_transform(X)
+            
+            # 2. Actual Accuracy
+            n_trees = self.ntrees_var.get()
+            cv_folds = min(5, min(np.bincount(y)))
+            
+            actual_acc = cross_val_score(RandomForestClassifier(n_estimators=n_trees, random_state=42), 
+                                         X_scaled, y, cv=cv_folds).mean()
+            
+            # 3. Permutation Loop
+            n_perms = 100
+            perm_accs = []
+            
+            for i in range(n_perms):
+                y_shuffled = np.random.permutation(y)
+                score = cross_val_score(RandomForestClassifier(n_estimators=n_trees, random_state=42), 
+                                        X_scaled, y_shuffled, cv=cv_folds).mean()
+                perm_accs.append(score)
+                if (i+1) % 20 == 0:
+                    self.update_status(f"Permutation progress: {i+1}/{n_perms}")
+                    self.update_idletasks()
+
+            # 4. Results
+            p_val = (np.sum(np.array(perm_accs) >= actual_acc) + 1) / (n_perms + 1)
+            
+            perm_results = {
+                'perm_accs': perm_accs,
+                'actual_acc': actual_acc,
+                'p_val': p_val,
+                'n_perms': n_perms
+            }
+            
+            self.vis_manager.create_rf_permutation_plot(perm_results)
+            self.update_status(f"✓ RF Permutation complete (p={p_val:.4f})")
+            
+            messagebox.showinfo("Validation Result", 
+                                f"Actual Accuracy: {actual_acc:.3f}\n"
+                                f"Permutation p-value: {p_val:.4f}\n\n"
+                                f"{'Model is statistically significant' if p_val < 0.05 else 'Warning: Model may be overfitted'}")
+
         except Exception as e:
             import traceback
             error_detail = traceback.format_exc()
@@ -3672,6 +4475,301 @@ class MetabolomicsApp(tk.Tk):
         toolbar.update()
     
     # ==================== Heatmap Visualization ====================
+
+    def _clean_annotation_key(self, value):
+        """Normalize annotation keys so Excel row IDs like 12.0 match feature ID 12."""
+        if pd.isna(value):
+            return ""
+        if isinstance(value, (int, np.integer)):
+            return str(int(value))
+        if isinstance(value, (float, np.floating)) and float(value).is_integer():
+            return str(int(value))
+        text = str(value).strip()
+        if text.endswith(".0"):
+            prefix = text[:-2]
+            if prefix.isdigit():
+                return prefix
+        return text
+
+    def _lookup_heatmap_annotation(self, feature_id):
+        """Find the annotation label for a heatmap feature ID."""
+        annotation_map = getattr(self, 'heatmap_annotation_map', {}) or {}
+        if not annotation_map:
+            return None
+
+        full_id = self._clean_annotation_key(feature_id)
+        candidates = [full_id]
+
+        parts = full_id.split('_')
+        if parts:
+            candidates.append(parts[0])
+
+        for candidate in candidates:
+            if candidate in annotation_map:
+                return annotation_map[candidate]
+        return None
+
+    def clean_hca_sample_name(self, sample_name):
+        """Remove technical/averaged suffixes from HCA sample labels."""
+        clean_name = re.sub(r'\.mzML.*', '', str(sample_name))
+        clean_name = re.sub(r'_(avg|\d+)$', '', clean_name)
+        return clean_name
+
+    def format_heatmap_feature_label(self, feature_id):
+        """Return the heatmap row label based on the selected annotation display mode."""
+        mode = getattr(self, 'heatmap_feature_label_var', tk.StringVar(value="Feature ID")).get()
+        feature_text = str(feature_id)
+        annotation = self._lookup_heatmap_annotation(feature_id)
+
+        if mode == "Feature ID" or not annotation:
+            return feature_text
+        if mode == "Annotated Name":
+            return annotation
+        return f"{annotation} ({feature_text})"
+
+    def load_heatmap_annotation_file(self):
+        """Load a CSV/XLSX annotation table for heatmap row labels."""
+        self._load_feature_annotation_file(status_source="heatmap")
+
+    def load_hca_annotation_file(self):
+        """Load a CSV/XLSX annotation table for HCA feature filtering."""
+        self._load_feature_annotation_file(status_source="hca")
+
+    def _load_feature_annotation_file(self, status_source="heatmap"):
+        """Load a CSV/XLSX annotation table shared by Heatmap and HCA."""
+        file_path = filedialog.askopenfilename(
+            title="Select Feature Annotation File",
+            filetypes=[
+                ("Annotation files", "*.csv *.xlsx *.xls"),
+                ("CSV files", "*.csv"),
+                ("Excel files", "*.xlsx *.xls"),
+                ("All files", "*.*")
+            ]
+        )
+        if not file_path:
+            return
+
+        try:
+            if file_path.lower().endswith(('.xlsx', '.xls')):
+                annotation_df = pd.read_excel(file_path)
+            else:
+                annotation_df = pd.read_csv(file_path)
+
+            if annotation_df.empty or len(annotation_df.columns) < 2:
+                messagebox.showwarning("Warning", "Annotation file must contain at least two columns: feature ID and annotation/name.")
+                return
+
+            columns = list(annotation_df.columns)
+            lower_cols = {str(col).lower().strip(): col for col in columns}
+
+            id_keywords = ['featureid', 'feature id', 'feature_id', 'feature', 'row id', 'row_id', 'rowid', 'id']
+            name_keywords = [
+                'annotation', 'annotated name', 'annotated_name', 'compound name',
+                'compound_name', 'compound', 'metabolite', 'metabolite name',
+                'metabolite_name', 'name', 'identity', 'putative id', 'putative_id'
+            ]
+
+            id_col = next((lower_cols[key] for key in id_keywords if key in lower_cols), columns[0])
+            name_col = next((lower_cols[key] for key in name_keywords if key in lower_cols and lower_cols[key] != id_col), None)
+            if name_col is None:
+                name_col = next((col for col in columns if col != id_col), columns[1])
+
+            annotation_map = {}
+            for _, row in annotation_df.iterrows():
+                key = self._clean_annotation_key(row.get(id_col, ""))
+                label = "" if pd.isna(row.get(name_col, "")) else str(row.get(name_col, "")).strip()
+                if not key or not label:
+                    continue
+
+                annotation_map[key] = label
+                if '_' in key:
+                    annotation_map.setdefault(key.split('_')[0], label)
+
+            if not annotation_map:
+                messagebox.showwarning("Warning", "No usable feature annotations were found in the selected file.")
+                return
+
+            self.heatmap_annotation_map = annotation_map
+            self.heatmap_annotation_path = file_path
+            filename = os.path.basename(file_path)
+            status = f"Loaded {len(annotation_map)} labels from {filename}\nID: {id_col} | Name: {name_col}"
+            if hasattr(self, 'heatmap_annotation_status_var'):
+                self.heatmap_annotation_status_var.set(status)
+            if hasattr(self, 'hca_annotation_status_var'):
+                self.hca_annotation_status_var.set(status)
+
+            messagebox.showinfo("Success", status)
+            self.update_status(f"✓ Loaded feature annotations from {filename}")
+
+        except Exception as e:
+            import traceback
+            messagebox.showerror("Error", f"Failed to load annotation file:\n{str(e)}\n\nDetails:\n{traceback.format_exc()}")
+            self.update_status("Error loading feature annotations")
+
+    def run_hca_only(self):
+        """Create a sample-only hierarchical clustering dendrogram."""
+        source = getattr(self, 'hca_data_source_var', tk.StringVar(value="Preprocessed Data")).get()
+        data = self.screened_data if source == "Screened Data" else self.preprocessed_data
+
+        if data is None:
+            messagebox.showwarning("Warning", f"{source} is not available. Please run the required analysis first.")
+            return
+
+        try:
+            self.update_status("Creating HCA dendrogram...")
+
+            selected_indices = getattr(self, 'hca_group_listbox', tk.Listbox()).curselection()
+            selected_groups = [self.hca_group_listbox.get(i) for i in selected_indices] if selected_indices else []
+            listbox_groups = list(self.hca_group_listbox.get(0, tk.END)) if hasattr(self, 'hca_group_listbox') else []
+
+            linkage_method = getattr(self, 'hca_linkage_var', tk.StringVar(value="average")).get()
+            distance_metric = getattr(self, 'hca_distance_var', tk.StringVar(value="euclidean")).get()
+            label_mode = getattr(self, 'hca_label_var', tk.StringVar(value="Sample Name")).get()
+            max_features = getattr(self, 'hca_max_features_var', tk.IntVar(value=0)).get()
+            exclude_qc = getattr(self, 'hca_exclude_qc_var', tk.BooleanVar(value=True)).get()
+            apply_log = getattr(self, 'hca_log_var', tk.BooleanVar(value=False)).get()
+
+            data_to_use = data
+            if getattr(self, 'hca_filter_enabled_var', tk.BooleanVar(value=False)).get():
+                filter_input = self.hca_filter_text.get('1.0', tk.END).strip()
+                if filter_input:
+                    raw_terms = [term.strip() for term in re.split(r'[\n,;]+', filter_input) if term.strip()]
+                    split_terms = [term.strip() for term in filter_input.split() if term.strip()]
+                    target_terms = {term.lower() for term in raw_terms + split_terms}
+                    feature_col = data_to_use.columns[0]
+
+                    def match_hca_feature(fid):
+                        fid_str = str(fid)
+                        fid_key = fid_str.lower()
+                        row_id = fid_str.split('_')[0].lower()
+                        annotation = self._lookup_heatmap_annotation(fid_str)
+                        annotation_key = annotation.lower() if annotation else ""
+
+                        if fid_key in target_terms or row_id in target_terms:
+                            return True
+                        if annotation_key and annotation_key in target_terms:
+                            return True
+                        return any(term in annotation_key for term in target_terms if len(term) >= 4)
+
+                    mask = data_to_use[feature_col].apply(match_hca_feature)
+                    filtered_data = data_to_use[mask].reset_index(drop=True)
+                    if len(filtered_data) < 2:
+                        messagebox.showwarning(
+                            "Warning",
+                            f"Only {len(filtered_data)} features matched the HCA filter. HCA requires at least 2 features. Using all features instead."
+                        )
+                    else:
+                        data_to_use = filtered_data
+                        self.update_status(f"Creating HCA with {len(data_to_use)} filtered features...")
+
+            all_sample_cols = [col for col in data_to_use.columns if '.mzML' in col]
+            sample_names = []
+            sample_groups = []
+            sample_vectors = []
+
+            for base_name, reps in self.replicate_mapping.items():
+                group = self.group_mapping.get(base_name, "Ungrouped")
+                if selected_groups and group not in selected_groups:
+                    continue
+                if exclude_qc and ((base_name in self.qc_samples) or ('qc' in group.lower())):
+                    continue
+
+                avg_col = f"{base_name}_avg.mzML Peak area"
+                if avg_col in all_sample_cols:
+                    vals = pd.to_numeric(data_to_use[avg_col], errors='coerce').values.astype(float)
+                    sample_name = self.clean_hca_sample_name(base_name)
+                else:
+                    rep_cols = [col for col, _ in reps if col in all_sample_cols]
+                    if not rep_cols:
+                        continue
+                    vals = data_to_use[rep_cols].apply(pd.to_numeric, errors='coerce').mean(axis=1).values.astype(float)
+                    sample_name = self.clean_hca_sample_name(base_name)
+
+                sample_names.append(sample_name)
+                sample_groups.append(group)
+                sample_vectors.append(vals)
+
+            if len(sample_vectors) < 2:
+                messagebox.showwarning("Warning", "HCA requires at least 2 valid samples after filtering.")
+                return
+
+            X = pd.DataFrame(
+                sample_vectors,
+                index=sample_names,
+                columns=data_to_use.iloc[:, 0].astype(str).values
+            )
+            X = X.replace(0, np.nan)
+            min_val = X.min().min() * 0.2
+            if pd.isna(min_val):
+                min_val = 0.1
+            X = X.fillna(min_val)
+
+            if apply_log:
+                X = np.log10(X + 1)
+
+            if max_features and max_features > 0 and X.shape[1] > max_features:
+                variances = X.var(axis=0)
+                top_feature_ids = variances.nlargest(max_features).index
+                X = X[top_feature_ids]
+
+            if X.shape[1] < 2:
+                messagebox.showwarning("Warning", "HCA requires at least 2 valid features.")
+                return
+
+            clustering_matrix = StandardScaler().fit_transform(X)
+            if linkage_method == 'ward':
+                distance_metric = 'euclidean'
+
+            linkage_matrix = sch.linkage(clustering_matrix, method=linkage_method, metric=distance_metric)
+            if label_mode == "Sample Name":
+                labels = [self.clean_hca_sample_name(name) for name in sample_names]
+            else:
+                labels = sample_groups
+
+            label_colors = {}
+            for label, group in zip(labels, sample_groups):
+                label_colors[label] = self.group_colors.get(group, '#333333')
+
+            visible_groups = []
+            for group in listbox_groups:
+                if group in sample_groups and group not in visible_groups:
+                    visible_groups.append(group)
+            for group in sample_groups:
+                if group not in visible_groups:
+                    visible_groups.append(group)
+
+            title = f"Sample HCA Dendrogram ({source}; averaged samples; {X.shape[1]} features)"
+            self.hca_result = {
+                'linkage': linkage_matrix,
+                'labels': labels,
+                'groups': sample_groups,
+                'sample_names': sample_names,
+                'source': source,
+                'features_used': X.shape[1],
+                'feature_ids': list(X.columns),
+                'linkage_method': linkage_method,
+                'distance_metric': distance_metric,
+                'log_transform': apply_log,
+                'sample_level': 'averaged'
+            }
+
+            self.vis_manager.create_hca_only_plot(
+                linkage_matrix,
+                labels,
+                title=title,
+                target_frame=self.hca_plot_frame,
+                label_colors=label_colors,
+                visible_groups=visible_groups,
+                plot_key='HCA Only'
+            )
+
+            self.update_status("✓ HCA dendrogram complete")
+
+        except Exception as e:
+            import traceback
+            error_detail = traceback.format_exc()
+            messagebox.showerror("Error", f"HCA dendrogram failed:\n{str(e)}\n\nDetails:\n{error_detail}")
+            self.update_status("Error generating HCA dendrogram")
     
     def run_heatmap(self):
         """Run Heatmap generation for Top Biomarkers"""
@@ -3679,27 +4777,55 @@ class MetabolomicsApp(tk.Tk):
             messagebox.showwarning("Warning", "Please run preprocessing (and optional Univariate Screening) first!")
             return
             
-        if self.plsda_result is None or self.rf_result is None:
+        feature_source = getattr(self, 'heatmap_source_var', tk.StringVar(value="Both (Union)")).get()
+        
+        if feature_source == "Both (Union)" and (self.plsda_result is None or self.rf_result is None):
             messagebox.showwarning("Warning", "Please run PLS-DA and Random Forest first to extract the top features!")
+            return
+        elif feature_source == "PLS-DA VIPs only" and self.plsda_result is None:
+            messagebox.showwarning("Warning", "Please run PLS-DA first to extract VIP features!")
+            return
+        elif feature_source == "Random Forest only" and self.rf_result is None:
+            messagebox.showwarning("Warning", "Please run Random Forest first to extract important features!")
             return
             
         try:
-            self.update_status("Generating Top Features Heatmap...")
+            self.update_status(f"Generating Top Features Heatmap ({feature_source})...")
             
             top_n = self.heatmap_top_n_var.get()
             sort_method = getattr(self, 'heatmap_sort_var', tk.StringVar(value="Retention Time")).get()
             cmap = getattr(self, 'heatmap_cmap_var', tk.StringVar(value="coolwarm")).get()
+            linkage_method = getattr(self, 'heatmap_linkage_var', tk.StringVar(value="average")).get()
+            label_mode = getattr(self, 'heatmap_label_var', tk.StringVar(value="Sample Group")).get()
 
-            # Get top features from PLS-DA and RF
-            vips = self.plsda_result['vip_scores']
-            feature_ids = self.screened_data.iloc[:, 0].values
-            top_vip_idx = np.argsort(vips)[-top_n:]
-            top_vip_features = [feature_ids[i] for i in top_vip_idx]
+            def sample_label(info):
+                return info['name'] if label_mode == "Sample Name" else info['group']
+
+            # Get group order from listbox
+            listbox_groups = list(self.heatmap_group_listbox.get(0, tk.END))
+            group_order = {g: i for i, g in enumerate(listbox_groups)}
+
+            selected_indices = getattr(self, 'heatmap_group_listbox', tk.Listbox()).curselection()
+            if selected_indices:
+                selected_groups = [self.heatmap_group_listbox.get(i) for i in selected_indices]
+            else:
+                selected_groups = None
+
+            # Extract top features based on selected source
+            combined_features = set()
             
-            top_rf_features = [f[0] for f in self.rf_result['top_features'][:top_n]]
-            
-            # Union of top discriminative features
-            combined_features = list(set(top_vip_features) | set(top_rf_features))
+            if feature_source in ["Both (Union)", "PLS-DA VIPs only"]:
+                vips = self.plsda_result['vip_scores']
+                feature_ids = self.screened_data.iloc[:, 0].values
+                top_vip_idx = np.argsort(vips)[-top_n:]
+                top_vip_features = [feature_ids[i] for i in top_vip_idx]
+                combined_features.update(top_vip_features)
+                
+            if feature_source in ["Both (Union)", "Random Forest only"]:
+                top_rf_features = [f[0] for f in self.rf_result['top_features'][:top_n]]
+                combined_features.update(top_rf_features)
+                
+            combined_features = list(combined_features)
             
             def extract_rt(f_id):
                 try:
@@ -3726,6 +4852,10 @@ class MetabolomicsApp(tk.Tk):
             
             # Ensure the data matches the currently established list order
             heatmap_data = heatmap_data.set_index(heatmap_data.columns[0]).loc[combined_features].reset_index()
+            if getattr(self, 'heatmap_annotation_map', None):
+                heatmap_data['Annotation_Name'] = [
+                    self._lookup_heatmap_annotation(fid) or "" for fid in heatmap_data.iloc[:, 0].values
+                ]
             self.heatmap_data = heatmap_data
             feature_labels = heatmap_data.iloc[:, 0].values
             
@@ -3738,6 +4868,10 @@ class MetabolomicsApp(tk.Tk):
             # We want exactly ONE column per sample base name.
             for base_name, reps in self.replicate_mapping.items():
                 group = self.group_mapping.get(base_name, "Ungrouped")
+                
+                if selected_groups and group not in selected_groups:
+                    continue
+                
                 is_qc = (base_name in self.qc_samples) or ('qc' in group.lower())
                 
                 # Check if an explicitly averaged column exists
@@ -3781,7 +4915,8 @@ class MetabolomicsApp(tk.Tk):
             if sort_method == "Clustering" and len(combined_features) > 1:
                 # Cluster using the biological samples to find co-regulated patterns
                 data_for_row_clustering = scaled_bio if n_bio > 0 else scaled_qc
-                row_linkage = sch.linkage(data_for_row_clustering, method='ward')
+                row_metric = 'euclidean' if linkage_method == 'ward' else 'correlation'
+                row_linkage = sch.linkage(data_for_row_clustering, method=linkage_method, metric=row_metric)
                 row_dendro = sch.dendrogram(row_linkage, no_plot=True)
                 row_idx = row_dendro['leaves']
                 
@@ -3792,34 +4927,47 @@ class MetabolomicsApp(tk.Tk):
                 feature_labels = [feature_labels[i] for i in row_idx]
             
             # Perform Hierarchical Clustering strictly on BIOLOGICAL samples
-            ordered_data_list = []
-            final_sample_names = []
-            col_linkage = None
+            ordered_data_list, final_sample_names, final_sample_groups, column_colors, col_linkage = [], [], [], [], None
             
             if n_bio > 1:
-                col_linkage = sch.linkage(scaled_bio.T, method='ward')
-                
-                col_dendro = sch.dendrogram(col_linkage, no_plot=True)
-                col_idx = col_dendro['leaves']
+                col_linkage = sch.linkage(scaled_bio.T, method=linkage_method, metric='euclidean')
+                col_idx = sch.dendrogram(col_linkage, no_plot=True)['leaves']
                 ordered_data_list.append(scaled_bio[:, col_idx])
                 for i in col_idx:
-                    info = bio_info[i]
-                    final_sample_names.append(f"{info['name']}\n[{info['group']}]")
+                    final_sample_names.append(sample_label(bio_info[i]))
+                    final_sample_groups.append(bio_info[i]['group'])
+                    column_colors.append(self.group_colors.get(bio_info[i]['group'], '#CCCCCC'))
             elif n_bio == 1:
                 ordered_data_list.append(scaled_bio)
-                final_sample_names.append(f"{bio_info[0]['name']}\n[{bio_info[0]['group']}]")
+                final_sample_names.append(sample_label(bio_info[0]))
+                final_sample_groups.append(bio_info[0]['group'])
+                column_colors.append(self.group_colors.get(bio_info[0]['group'], '#CCCCCC'))
+            elif n_bio > 1:
+                # Custom group-based sorting if Clustering is not used for biological samples
+                bio_info_with_idx = sorted(enumerate(bio_info), key=lambda x: (group_order.get(x[1]['group'], 999), x[1]['name']))
+                bio_indices = [x[0] for x in bio_info_with_idx]
+                ordered_data_list.append(scaled_bio[:, bio_indices])
+                for idx in bio_indices:
+                    final_sample_names.append(sample_label(bio_info[idx]))
+                    final_sample_groups.append(bio_info[idx]['group'])
+                    column_colors.append(self.group_colors.get(bio_info[idx]['group'], '#CCCCCC'))
                 
             # Append QC samples to the far right (unclustered)
             if n_qc > 0:
                 ordered_data_list.append(scaled_qc)
                 for info in qc_info:
-                    final_sample_names.append(f"{info['name']}\n[{info['group']}]")
+                    final_sample_names.append(sample_label(info))
+                    final_sample_groups.append(info['group'])
+                    column_colors.append(self.group_colors.get(info['group'], '#CCCCCC'))
             
             # Reconstruct final ordered data array
             ordered_data = np.hstack(ordered_data_list)
+            display_feature_labels = [self.format_heatmap_feature_label(fid) for fid in feature_labels]
             
             self.vis_manager.create_heatmap_plot(
-                ordered_data, feature_labels, final_sample_names, col_linkage, row_linkage, n_bio, n_qc, cmap
+                ordered_data, display_feature_labels, final_sample_names, col_linkage, row_linkage, n_bio, n_qc, cmap,
+                column_colors=column_colors, column_groups=final_sample_groups,
+                show_group_legend=(label_mode == "Sample Name")
             )
             
             self.update_status("✓ Heatmap generated successfully")
@@ -3879,8 +5027,8 @@ class MetabolomicsApp(tk.Tk):
         selected_indices = self.venn_group_listbox.curselection()
         selected_groups = [self.venn_group_listbox.get(i) for i in selected_indices]
         
-        if len(selected_groups) < 2 or len(selected_groups) > 3:
-            messagebox.showwarning("Warning", "Venn diagrams only support 2 to 3 groups.\nFor more groups, please use the UpSet Plot tab.")
+        if len(selected_groups) < 2:
+            messagebox.showwarning("Warning", "Please select at least 2 groups for comparison.")
             return
             
         if getattr(self, 'preprocessed_data', None) is None:
@@ -3900,7 +5048,15 @@ class MetabolomicsApp(tk.Tk):
                 messagebox.showerror("Error", "Could not calculate feature sets.")
                 return
                 
-            self.vis_manager.create_venn_plot(self.venn_sets, selected_groups)
+            # Switch between Venn and UpSet logic based on group count
+            if len(selected_groups) <= 3:
+                self.vis_manager.create_venn_plot(self.venn_sets, selected_groups)
+            else:
+                self.vis_manager.create_upset_plot(
+                    self.venn_sets, selected_groups, 
+                    target_frame=self.venn_plot_frame, 
+                    plot_key='Venn Diagram'
+                )
             
             # Populate intersections dropdown
             feature_map = defaultdict(list)
@@ -4071,8 +5227,39 @@ class MetabolomicsApp(tk.Tk):
             command=self.run_feature_plot
         ).grid(row=6, column=0, sticky='w', pady=2)
 
+        sort_frame = ttk.Frame(feat_frame)
+        sort_frame.grid(row=6, column=1, sticky='w', pady=2)
+        ttk.Label(sort_frame, text="Sort:").pack(side='left')
+        self.fv_sort_groups_var = tk.StringVar(value="Listbox Order")
+        fv_sort_combo = ttk.Combobox(
+            sort_frame, 
+            textvariable=self.fv_sort_groups_var, 
+            values=["Listbox Order", "Alphabetical", "Median (Asc)", "Median (Desc)"], 
+            state='readonly', 
+            width=13
+        )
+        fv_sort_combo.pack(side='left', padx=2)
+        fv_sort_combo.bind('<<ComboboxSelected>>', self.run_feature_plot)
+
+        font_frame = ttk.Frame(feat_frame)
+        font_frame.grid(row=7, column=0, columnspan=2, sticky='w', pady=2)
+        ttk.Label(font_frame, text="Plot Font Scale:").pack(side='left')
+        self.fv_font_scale_var = tk.DoubleVar(value=1.0)
+        fv_font_spin = ttk.Spinbox(
+            font_frame,
+            from_=0.6,
+            to=3.0,
+            increment=0.1,
+            textvariable=self.fv_font_scale_var,
+            width=6,
+            command=self.run_feature_plot
+        )
+        fv_font_spin.pack(side='left', padx=5)
+        fv_font_spin.bind('<Return>', self.run_feature_plot)
+        fv_font_spin.bind('<FocusOut>', self.run_feature_plot)
+
         btn_frame = ttk.Frame(feat_frame)
-        btn_frame.grid(row=7, column=0, columnspan=2, sticky='w', pady=(10, 5))
+        btn_frame.grid(row=8, column=0, columnspan=2, sticky='w', pady=(10, 5))
 
         ttk.Button(
             btn_frame,
@@ -4086,19 +5273,99 @@ class MetabolomicsApp(tk.Tk):
             command=self.export_feature_data
         ).pack(side='left')
 
+        fv_note = (
+            "Note: Feature Viewer p-values are recalculated from the data currently shown here. "
+            "For 2 groups this uses Welch's t-test; for more than 2 groups the title p-value uses one-way ANOVA. "
+            "Raw Data with LOD/log may differ from Volcano because Volcano uses preprocessed data and may use averaged sample columns."
+        )
+        ttk.Label(
+            feat_frame,
+            text=fv_note,
+            foreground='gray',
+            wraplength=520,
+            justify='left'
+        ).grid(row=9, column=0, columnspan=2, sticky='w', pady=(6, 0))
+
         # Right side: Group selection
-        group_frame = ttk.LabelFrame(control_frame, text="Select Groups (All if none selected)", padding=5)
+        group_frame = ttk.LabelFrame(control_frame, text="Select & Order Groups (All if none)", padding=5)
         group_frame.pack(side='left', fill='both', expand=True)
 
-        self.fv_group_listbox = tk.Listbox(group_frame, selectmode='multiple', height=5, exportselection=0)
+        list_container = ttk.Frame(group_frame)
+        list_container.pack(side='left', fill='both', expand=True)
+
+        self.fv_group_listbox = tk.Listbox(list_container, selectmode='multiple', height=5, exportselection=0)
         self.fv_group_listbox.pack(side='left', fill='both', expand=True)
-        sb = ttk.Scrollbar(group_frame, orient='vertical', command=self.fv_group_listbox.yview)
+        sb = ttk.Scrollbar(list_container, orient='vertical', command=self.fv_group_listbox.yview)
         sb.pack(side='right', fill='y')
         self.fv_group_listbox.config(yscrollcommand=sb.set)
+
+        # Add Up/Down buttons
+        btn_container = ttk.Frame(group_frame)
+        btn_container.pack(side='left', fill='y', padx=5)
+        ttk.Button(btn_container, text="▲ Up", width=6, command=self.move_fv_group_up).pack(side='top', pady=2)
+        ttk.Button(btn_container, text="▼ Down", width=6, command=self.move_fv_group_down).pack(side='top', pady=2)
 
         # Plot area
         self.feature_viewer_plot_frame = ttk.Frame(tab)
         self.feature_viewer_plot_frame.pack(fill='both', expand=True, padx=10, pady=5)
+
+    def move_fv_group_up(self):
+        """Move selected group up in the Feature Viewer listbox."""
+        selection = self.fv_group_listbox.curselection()
+        if not selection: return
+        for pos in selection:
+            if pos == 0: continue
+            text = self.fv_group_listbox.get(pos)
+            self.fv_group_listbox.delete(pos)
+            self.fv_group_listbox.insert(pos - 1, text)
+            self.fv_group_listbox.selection_set(pos - 1)
+        self.run_feature_plot()
+
+    def move_listbox_item(self, listbox, down=False):
+        """Generic method to move selected items up or down in a listbox."""
+        selection = list(listbox.curselection())
+        if not selection: return
+        
+        if down:
+            selection.reverse()
+            size = listbox.size()
+            for pos in selection:
+                if pos == size - 1: continue
+                text = listbox.get(pos)
+                listbox.delete(pos)
+                listbox.insert(pos + 1, text)
+                listbox.selection_set(pos + 1)
+        else:
+            for pos in selection:
+                if pos == 0: continue
+                text = listbox.get(pos)
+                listbox.delete(pos)
+                listbox.insert(pos - 1, text)
+                listbox.selection_set(pos - 1)
+
+    def move_fv_group_down(self):
+        """Move selected group down in the Feature Viewer listbox."""
+        selection = list(self.fv_group_listbox.curselection())
+        selection.reverse()
+        if not selection: return
+        size = self.fv_group_listbox.size()
+        for pos in selection:
+            if pos == size - 1: continue
+            text = self.fv_group_listbox.get(pos)
+            self.fv_group_listbox.delete(pos)
+            self.fv_group_listbox.insert(pos + 1, text)
+            self.fv_group_listbox.selection_set(pos + 1)
+        self.run_feature_plot()
+
+    def move_pca_group(self, down=False):
+        """Move PCA groups and retain the order used by the plot legend."""
+        self.move_listbox_item(self.pca_group_listbox, down=down)
+        self.pca_group_order = list(self.pca_group_listbox.get(0, tk.END))
+
+    def move_plsda_group(self, down=False):
+        """Move PLS-DA groups and retain the order used by the plot legend."""
+        self.move_listbox_item(self.plsda_group_listbox, down=down)
+        self.plsda_group_order = list(self.plsda_group_listbox.get(0, tk.END))
 
     def create_spectrum_tab(self):
         """Tab 10: Spectrum Search & Viewer"""
@@ -4665,6 +5932,17 @@ class MetabolomicsApp(tk.Tk):
                                 group_cols.extend(rep_cols)
                     group_cols_map[g] = group_cols
 
+                # Map raw columns for true detection frequency calculation
+                raw_data_source = getattr(self, 'data', self.preprocessed_data)
+                all_raw_cols = [c for c in raw_data_source.columns if '.mzML' in c]
+                group_raw_cols_map = {}
+                for g in venn_groups:
+                    r_cols = []
+                    for base_name, reps in self.replicate_mapping.items():
+                        if self.group_mapping.get(base_name) == g:
+                            r_cols.extend([c for c, _ in reps if c in all_raw_cols])
+                    group_raw_cols_map[g] = r_cols
+
                 used_sheet_names = set()
                 
                 with pd.ExcelWriter(file_path, engine='openpyxl') as writer:
@@ -4709,10 +5987,11 @@ class MetabolomicsApp(tk.Tk):
                                 mean_cols.append(col_name)
                                 
                                 freq_col = f'Freq_pct_{g}'
-                                if g_cols:
+                                r_cols = group_raw_cols_map[g]
+                                if r_cols:
                                     # Use numeric arrays safely
-                                    raw_vals = pd.to_numeric(df_raw[g_cols].values.flatten(), errors='coerce').reshape(df_raw[g_cols].shape)
-                                    df[freq_col] = (np.sum((raw_vals > 0) & (~np.isnan(raw_vals)), axis=1) / len(g_cols)) * 100
+                                    raw_vals = pd.to_numeric(df_raw[r_cols].values.flatten(), errors='coerce').reshape(df_raw[r_cols].shape)
+                                    df[freq_col] = (np.sum((raw_vals > 0) & (~np.isnan(raw_vals)), axis=1) / len(r_cols)) * 100
                                 else:
                                     df[freq_col] = 0
                                 stat_cols.append(freq_col)
@@ -5176,6 +6455,8 @@ class MetabolomicsApp(tk.Tk):
         show_violin = getattr(self, 'fv_show_violin_var', tk.BooleanVar(value=True)).get()
         show_boxplot = getattr(self, 'fv_show_boxplot_var', tk.BooleanVar(value=True)).get()
         show_points = getattr(self, 'fv_show_points_var', tk.BooleanVar(value=True)).get()
+        font_scale = getattr(self, 'fv_font_scale_var', tk.DoubleVar(value=1.0)).get()
+        font_scale = max(0.6, min(float(font_scale), 3.0))
         
         lod_fraction_str = getattr(self, 'fv_lod_fraction_var', tk.StringVar(value="1/5 (20%)")).get()
         if "1/2" in lod_fraction_str: lod_fraction = 0.5
@@ -5214,22 +6495,20 @@ class MetabolomicsApp(tk.Tk):
                 else:
                     lod_value = 0.0
             
-            unique_groups = sorted(set(self.group_mapping.values()))
+            # Get the exact order currently displayed in the listbox
+            listbox_groups = list(self.fv_group_listbox.get(0, tk.END))
             
             exclude_qc = getattr(self, 'feature_plot_exclude_qc_var', tk.BooleanVar(value=True)).get()
-            if exclude_qc:
-                unique_groups = [g for g in unique_groups if 'qc' not in g.lower()]
-                
             selected_indices = self.fv_group_listbox.curselection()
             selected_groups = [self.fv_group_listbox.get(i) for i in selected_indices]
             
             if selected_groups:
-                unique_groups = [g for g in unique_groups if g in selected_groups]
+                unique_groups = [g for g in listbox_groups if g in selected_groups]
+            else:
+                unique_groups = listbox_groups
                 
-            special_groups = [g for g in ['QC', 'Ungrouped'] if g in unique_groups]
-            for g in special_groups:
-                unique_groups.remove(g)
-            unique_groups.extend(special_groups)
+            if exclude_qc:
+                unique_groups = [g for g in unique_groups if 'qc' not in g.lower()]
 
             ylabel = "Normalized Peak Intensity" if data_source == "Preprocessed Data" else "Peak Intensity"
             if transform_type == "Log10":
@@ -5288,9 +6567,26 @@ class MetabolomicsApp(tk.Tk):
                         'Value': val
                     })
 
+            sort_method = getattr(self, 'fv_sort_groups_var', tk.StringVar(value="Listbox Order")).get()
+            if sort_method != "Listbox Order" and len(plot_data) > 0:
+                medians = [np.median(d) if len(d) > 0 else 0 for d in plot_data]
+                combined = list(zip(plot_data, plot_labels, plot_sample_names, medians))
+                
+                if sort_method == "Alphabetical":
+                    combined.sort(key=lambda x: x[1])
+                elif sort_method == "Median (Asc)":
+                    combined.sort(key=lambda x: x[3])
+                elif sort_method == "Median (Desc)":
+                    combined.sort(key=lambda x: x[3], reverse=True)
+                
+                plot_data = [x[0] for x in combined]
+                plot_labels = [x[1] for x in combined]
+                plot_sample_names = [x[2] for x in combined]
+
             self.vis_manager.create_feature_distribution_plot(
                 feature_id, plot_data, plot_labels, plot_sample_names, 
-                ylabel=ylabel, show_points=show_points, show_violin=show_violin, show_boxplot=show_boxplot
+                ylabel=ylabel, show_points=show_points, show_violin=show_violin,
+                show_boxplot=show_boxplot, font_scale=font_scale
             )
             self.update_status(f"✓ Plot for {feature_id} generated.")
 
@@ -5304,6 +6600,13 @@ class MetabolomicsApp(tk.Tk):
     def export_preprocessed(self):
         """Export preprocessed data to CSV"""
         self.export_manager.export_preprocessed_data(self.preprocessed_data)
+        
+    def export_screened_data(self):
+        """Export the screened (filtered) data matrix for external ML"""
+        if getattr(self, 'screened_data', None) is None:
+            messagebox.showwarning("Warning", "No screened data available.\nPlease run Univariate Screening and click 'Filter Data for Downstream ML' first.")
+            return
+        self.export_manager.export_preprocessed_data(self.screened_data, default_filename="screened_data_ML_ready.csv")
     
     def export_pca(self):
         """Export PCA results to CSV"""
@@ -5333,15 +6636,95 @@ class MetabolomicsApp(tk.Tk):
     def export_rf_features(self):
         """Export Random Forest feature importance to CSV"""
         self.export_manager.export_rf_results(self.rf_result)
-        
+
+    def export_plsda_rf_features(self):
+        """Export the union and overlap of PLS-DA VIP and RF Top N features."""
+        if self.plsda_result is None or self.rf_result is None:
+            messagebox.showwarning("Warning", "Please run both PLS-DA and Random Forest first!")
+            return
+
+        try:
+            vip_scores = np.asarray(self.plsda_result['vip_scores'])
+            pls_feature_ids = np.asarray(self.plsda_result.get(
+                'feature_ids', self.screened_data.iloc[:, 0].values
+            ))
+            pls_selected = set(pls_feature_ids[vip_scores > 1.0])
+            vip_by_feature = dict(zip(pls_feature_ids, vip_scores))
+
+            rf_feature_ids = np.asarray(self.rf_result['feature_ids'])
+            rf_importances = np.asarray(self.rf_result['importances'])
+            rf_top_features = self.rf_result.get('top_features', [])
+            rf_selected = {feature_id for feature_id, _ in rf_top_features}
+            rf_importance_by_feature = dict(zip(rf_feature_ids, rf_importances))
+
+            pls_groups = sorted(set(self.plsda_result.get('groups', [])))
+            rf_groups = sorted(set(self.rf_result.get('groups', [])))
+            if pls_groups and rf_groups and pls_groups != rf_groups:
+                messagebox.showwarning(
+                    "Group Mismatch",
+                    "PLS-DA and Random Forest were run with different groups.\n"
+                    "Please rerun both models using the same group selection before exporting."
+                )
+                return
+
+            union_features = pls_selected | rf_selected
+            if not union_features:
+                messagebox.showinfo("Model Comparison", "No features passed PLS-DA VIP > 1 or RF Top N selection.")
+                return
+
+            analyzed_groups = ", ".join(pls_groups or rf_groups) or "Not recorded"
+            rows = []
+            for feature_id in union_features:
+                in_pls = feature_id in pls_selected
+                in_rf = feature_id in rf_selected
+                rows.append({
+                    'FeatureID': feature_id,
+                    'Selection_Source': 'Both' if in_pls and in_rf else ('PLS-DA' if in_pls else 'RF'),
+                    'PLS-DA_VIP': vip_by_feature.get(feature_id, np.nan),
+                    'RF_Importance': rf_importance_by_feature.get(feature_id, np.nan),
+                    'Selected_PLSDA_VIP_gt_1': in_pls,
+                    'Selected_RF_Top_N': in_rf,
+                    'Is_PLSDA_RF_Consensus': in_pls and in_rf,
+                    'Analyzed_Groups': analyzed_groups
+                })
+
+            df = pd.DataFrame(rows).sort_values(
+                ['Is_PLSDA_RF_Consensus', 'PLS-DA_VIP', 'RF_Importance'],
+                ascending=[False, False, False]
+            )
+            df = ExportManager.process_feature_ids(df, 'FeatureID')
+
+            filepath = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                initialfile="plsda_rf_feature_comparison.csv",
+                filetypes=[("CSV files", "*.csv"), ("Excel files", "*.xlsx")]
+            )
+            if filepath:
+                if filepath.lower().endswith('.xlsx'):
+                    df.to_excel(filepath, index=False)
+                else:
+                    df.to_csv(filepath, index=False)
+                overlap_count = int(df['Is_PLSDA_RF_Consensus'].sum())
+                messagebox.showinfo(
+                    "Success",
+                    f"Exported {len(df)} selected features ({overlap_count} shared by both models) to:\n{filepath}"
+                )
+                self.update_status(f"✓ Exported PLS-DA + RF features ({overlap_count} shared)")
+        except Exception as e:
+            import traceback
+            messagebox.showerror(
+                "Error",
+                f"Failed to export PLS-DA + RF features:\n{str(e)}\n\nDetails:\n{traceback.format_exc()}"
+            )
+
     def export_consensus_features(self):
-        """Find and export exact overlap of significant features between Volcano, PLS-DA, and RF"""
+        """Find and export overlap and union of significant features between Volcano, PLS-DA, and RF"""
         if not all([self.volcano_result, self.plsda_result, self.rf_result]):
             messagebox.showwarning("Warning", "Please run Volcano Plot, PLS-DA, and Random Forest first!")
             return
             
         try:
-            self.update_status("Calculating consensus biomarkers...")
+            self.update_status("Calculating model consensus comparison...")
             
             # 1. Volcano Significant Features
             pval_thresh = self.pvalue_var.get()
@@ -5354,38 +6737,74 @@ class MetabolomicsApp(tk.Tk):
             volcano_sig_mask = sig_up | sig_down
             
             volcano_features = set(self.volcano_result['feature_ids'][volcano_sig_mask])
-            volcano_dict = {f_id: (fc, p) for f_id, fc, p in zip(self.volcano_result['feature_ids'], v_fc, v_pvals) if f_id in volcano_features}
+            volcano_full_dict = {f: (fc, p) for f, fc, p in zip(self.volcano_result['feature_ids'], v_fc, v_pvals)}
 
             # 2. PLS-DA VIP > 1.0 Features
             vip_scores = self.plsda_result['vip_scores']
             plsda_features_all = self.plsda_result.get('feature_ids', self.screened_data.iloc[:, 0].values)
-            
             plsda_features = set(plsda_features_all[vip_scores > 1.0])
-            plsda_dict = {f_id: vip for f_id, vip in zip(plsda_features_all, vip_scores) if f_id in plsda_features}
+            plsda_full_dict = {f: v for f, v in zip(plsda_features_all, vip_scores)}
 
-            # 3. Random Forest Top Features
-            rf_dict = {f[0]: f[1] for f in self.rf_result['top_features']}
-            rf_features = set(rf_dict.keys())
+            # 3. Random Forest Features (Importance > 0.0)
+            rf_importances = self.rf_result['importances']
+            rf_feature_ids = self.rf_result['feature_ids']
+            rf_features = set(rf_feature_ids[rf_importances > 0.0])
+            rf_full_dict = {f: i for f, i in zip(rf_feature_ids, rf_importances)}
 
-            # 4. Find Intersection
+            # 4. Consensus & Union
             consensus_features = volcano_features & plsda_features & rf_features
+            union_features = volcano_features | plsda_features | rf_features
             
-            if not consensus_features:
-                messagebox.showinfo("Consensus Biomarkers", "No features met all three criteria:\n- Volcano (Significant)\n- PLS-DA (VIP > 1.0)\n- Random Forest (Top N)")
-                self.update_status("No consensus features found.")
+            if not union_features:
+                messagebox.showinfo("Model Comparison", "No significant features found in any method.")
                 return
                 
-            # Build Export Data
-            data = [{'FeatureID': f, 'Log2FC': volcano_dict[f][0], 'P-value': volcano_dict[f][1], 'PLS-DA_VIP': plsda_dict[f], 'RF_Importance': rf_dict[f]} for f in consensus_features]
-            df = pd.DataFrame(data).sort_values('RF_Importance', ascending=False)
+            # Build Combined Export Data
+            data = []
+            for f in sorted(list(union_features)):
+                v_stats = volcano_full_dict.get(f, (np.nan, np.nan))
+                
+                # Determine selection source for the detailed note
+                is_pls = f in plsda_features
+                is_rf = f in rf_features
+                if is_pls and is_rf:
+                    source_note = "Both"
+                elif is_pls:
+                    source_note = "PLS-DA"
+                elif is_rf:
+                    source_note = "RF"
+                else:
+                    source_note = "Volcano Only"
+                    
+                data.append({
+                    'FeatureID': f,
+                    'Selection_Source': source_note,
+                    'Log2FC': v_stats[0],
+                    'P-value': v_stats[1],
+                    'PLS-DA_VIP': plsda_full_dict.get(f, np.nan),
+                    'RF_Importance': rf_full_dict.get(f, np.nan),
+                    'Sig_Volcano': f in volcano_features,
+                    'Sig_PLSDA_VIP': is_pls,
+                    'Sig_RF_Imp': is_rf,
+                    'Is_Consensus': f in consensus_features
+                })
+            
+            df = pd.DataFrame(data).sort_values(['Is_Consensus', 'PLS-DA_VIP'], ascending=False)
             df = ExportManager.process_feature_ids(df, 'FeatureID')
 
-            filepath = filedialog.asksaveasfilename(defaultextension=".csv", initialfile="consensus_biomarkers.csv", filetypes=[("CSV files", "*.csv")])
+            filepath = filedialog.asksaveasfilename(
+                defaultextension=".csv", 
+                initialfile="biomarker_consensus_comparison.csv", 
+                filetypes=[("CSV files", "*.csv"), ("Excel files", "*.xlsx")]
+            )
             
             if filepath:
-                df.to_csv(filepath, index=False)
-                messagebox.showinfo("Success", f"Found and exported {len(consensus_features)} robust consensus biomarkers to:\n{filepath}")
-                self.update_status(f"✓ Exported {len(consensus_features)} consensus biomarkers")
+                if filepath.endswith('.xlsx'):
+                    df.to_excel(filepath, index=False)
+                else:
+                    df.to_csv(filepath, index=False)
+                messagebox.showinfo("Success", f"Exported {len(df)} features to:\n{filepath}")
+                self.update_status(f"✓ Exported {len(df)} features")
                 
         except Exception as e:
             import traceback
@@ -5423,6 +6842,91 @@ class MetabolomicsApp(tk.Tk):
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to export feature data:\n{str(e)}")
 
+    def export_all_qc_rsd(self):
+        """Export QC RSD statistics for every feature using the selected QC samples."""
+        if self.data is None:
+            messagebox.showwarning("Warning", "Please load data first!")
+            return
+
+        if not self.qc_samples:
+            messagebox.showwarning(
+                "Warning",
+                "No QC samples defined! Please use 'Select QC Samples' in the Preprocessing or Data tab first."
+            )
+            return
+
+        try:
+            sample_cols = [col for col in self.data.columns if '.mzML' in col]
+            qc_cols = []
+            for col in sample_cols:
+                base_name = re.sub(r'_(\d+|avg)\.mzML.*', '', col)
+                if base_name in self.qc_samples:
+                    qc_cols.append(col)
+
+            qc_cols = sorted(
+                list(dict.fromkeys(qc_cols)),
+                key=lambda x: [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', x)]
+            )
+
+            if not qc_cols:
+                messagebox.showerror("Error", "No columns found for the selected QC samples.")
+                return
+
+            rows = []
+            feature_col = self.data.columns[0]
+            for _, row in self.data.iterrows():
+                qc_values = pd.to_numeric(row[qc_cols], errors='coerce')
+                positive_values = qc_values[(qc_values.notna()) & (qc_values > 0)]
+                valid_count = int(len(positive_values))
+                missing_or_zero_count = int(len(qc_cols) - valid_count)
+
+                if valid_count >= 2:
+                    mean_val = float(positive_values.mean())
+                    sd_val = float(positive_values.std(ddof=1))
+                    rsd_val = (sd_val / mean_val * 100) if mean_val > 0 else 100.0
+                else:
+                    mean_val = float(positive_values.mean()) if valid_count else np.nan
+                    sd_val = np.nan
+                    rsd_val = np.nan
+
+                rows.append({
+                    'FeatureID': row[feature_col],
+                    'QC_Column_Count': len(qc_cols),
+                    'QC_Positive_Value_Count': valid_count,
+                    'QC_Missing_or_Zero_Count': missing_or_zero_count,
+                    'QC_Detection_Percent': (valid_count / len(qc_cols) * 100) if qc_cols else np.nan,
+                    'QC_Mean': mean_val,
+                    'QC_SD': sd_val,
+                    'QC_RSD_Percent': rsd_val
+                })
+
+            export_df = pd.DataFrame(rows)
+            export_df = ExportManager.process_feature_ids(export_df, 'FeatureID')
+
+            filepath = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                initialfile="qc_rsd_all_features.csv",
+                filetypes=[("CSV files", "*.csv"), ("Excel files", "*.xlsx")]
+            )
+
+            if filepath:
+                if filepath.lower().endswith('.xlsx'):
+                    export_df.to_excel(filepath, index=False)
+                else:
+                    export_df.to_csv(filepath, index=False)
+
+                messagebox.showinfo(
+                    "Success",
+                    f"Exported QC RSD statistics for {len(export_df)} features using {len(qc_cols)} QC columns to:\n{filepath}"
+                )
+                self.update_status(f"Exported QC RSD for {len(export_df)} features")
+        except Exception as e:
+            import traceback
+            messagebox.showerror(
+                "Error",
+                f"Failed to export QC RSD statistics:\n{str(e)}\n\nDetails:\n{traceback.format_exc()}"
+            )
+
     def export_current_plot(self):
         """Export the plot currently visible in the active tab"""
         current_tab = self.notebook.index(self.notebook.select())
@@ -5435,6 +6939,9 @@ class MetabolomicsApp(tk.Tk):
         if "Prepro" in tab_text:
             plot_key = 'Preprocessing'
             default_name = "distribution_plot.png"
+        elif "Global Heatmap" in tab_text:
+            plot_key = 'Global Heatmap'
+            default_name = "global_heatmap.png"
         elif "PCA" in tab_text:
             plot_key = 'PCA'
             default_name = "pca_score_plot.png"
@@ -5450,21 +6957,31 @@ class MetabolomicsApp(tk.Tk):
         elif "Random Forest" in tab_text:
             plot_key = 'Random Forest'
             default_name = "rf_importance_plot.png"
+        elif "HCA Only" in tab_text:
+            plot_key = 'HCA Only'
+            default_name = "hca_dendrogram.png"
         elif "Heatmap" in tab_text:
             plot_key = 'Heatmap'
             default_name = "heatmap.png"
+        elif "Model Venn" in tab_text:
+            plot_key = 'Model Venn Diagram'
+            default_name = "model_comparison_venn.png"
         elif "Comparative" in tab_text or "Venn" in tab_text:
             plot_key = 'Venn Diagram'
             default_name = "venn_diagram.png"
-        elif "UpSet" in tab_text:
-            plot_key = 'UpSet Plot'
-            default_name = "upset_plot.png"
         elif "Feature Viewer" in tab_text:
             plot_key = 'Feature_Viewer'
             default_name = f"feature_plot_{self.feature_viewer_id_var.get().replace('/', '_').replace(':', '_')}.png"
         elif "Spectrum" in tab_text:
             plot_key = 'Spectrum'
             default_name = "spectrum_plot.png"
+        elif "QC Explorer" in tab_text:
+            plot_key = 'QC_Control_Chart'
+            if self.qc_analysis_mode.get() == 'feature':
+                feat_id = self.qc_feature_id_var.get().replace('/', '_').replace(':', '_')
+                default_name = f"qc_control_chart_{feat_id if feat_id else 'feature'}.png"
+            else:
+                default_name = "qc_control_chart_global_average.png"
             
         fig = self.generated_plots.get(plot_key)
         
@@ -5517,6 +7034,10 @@ class MetabolomicsApp(tk.Tk):
                     'group_colors': self.group_colors,
                     'qc_samples': self.qc_samples,
                     'sample_names': self.sample_names,
+                    'heatmap_annotation_map': getattr(self, 'heatmap_annotation_map', {}),
+                    'heatmap_annotation_path': getattr(self, 'heatmap_annotation_path', ""),
+                    'pca_group_order': list(self.pca_group_listbox.get(0, tk.END)),
+                    'plsda_group_order': list(self.plsda_group_listbox.get(0, tk.END)),
                     'file_label_text': self.file_label.cget("text")
                 },
                 'results_state': {
@@ -5525,8 +7046,9 @@ class MetabolomicsApp(tk.Tk):
                     'volcano_result': self.volcano_result,
                     'rf_result': self.rf_result,
                     'heatmap_data': self.heatmap_data,
+                    'hca_result': getattr(self, 'hca_result', None),
                     'venn_sets': getattr(self, 'venn_sets', None),
-                    'upset_sets': getattr(self, 'upset_sets', None),
+                    'global_heatmap_generated': getattr(self, 'global_heatmap_generated', False),
                 },
                 'gui_vars': {
                     'avg_replicates_var': self.avg_replicates_var.get(),
@@ -5536,6 +7058,8 @@ class MetabolomicsApp(tk.Tk):
                     'detection_threshold_var': self.detection_threshold_var.get(),
                     'filter_intensity_var': self.filter_intensity_var.get(),
                     'min_intensity_var': self.min_intensity_var.get(),
+                    'filter_qc_presence_var': self.filter_qc_presence_var.get(),
+                    'qc_presence_threshold_var': self.qc_presence_threshold_var.get(),
                     'filter_rsd_var': self.filter_rsd_var.get(),
                     'rsd_threshold_var': self.rsd_threshold_var.get(),
                     'filter_iqr_var': self.filter_iqr_var.get(),
@@ -5545,10 +7069,16 @@ class MetabolomicsApp(tk.Tk):
                     'pca_log_var': self.pca_log_var.get(),
                     'show_ellipses_var': self.show_ellipses_var.get(),
                     'show_labels_var': self.show_labels_var.get(),
+                    'global_heatmap_max_var': getattr(self, 'global_heatmap_max_var', tk.IntVar(value=1000)).get(),
+                    'global_heatmap_sort_var': getattr(self, 'global_heatmap_sort_var', tk.StringVar(value="Clustering")).get(),
+                    'global_heatmap_cmap_var': getattr(self, 'global_heatmap_cmap_var', tk.StringVar(value="coolwarm")).get(),
+                    'global_heatmap_label_var': getattr(self, 'global_heatmap_label_var', tk.StringVar(value="Sample Group")).get(),
                     'pca_permanova_var': getattr(self, 'pca_permanova_var', tk.BooleanVar(value=False)).get(),
                     'pca_permdisp_var': getattr(self, 'pca_permdisp_var', tk.BooleanVar(value=False)).get(),
+                    'pca_filter_enabled_var': getattr(self, 'pca_filter_enabled_var', tk.BooleanVar(value=False)).get(),
                     'volcano_group1_var': self.volcano_group1_var.get(),
                     'volcano_group2_var': self.volcano_group2_var.get(),
+                    'volcano_subset_var': getattr(self, 'volcano_subset_var', tk.StringVar(value="All Preprocessed Features")).get(),
                     'pvalue_var': self.pvalue_var.get(),
                     'fc_var': self.fc_var.get(),
                     'plsda_components_var': self.plsda_components_var.get(),
@@ -5559,15 +7089,26 @@ class MetabolomicsApp(tk.Tk):
                     'ntrees_var': self.ntrees_var.get(),
                     'top_n_var': self.top_n_var.get(),
                     'rf_exclude_qc_var': self.rf_exclude_qc_var.get(),
-                    'rf_pairwise_var': getattr(self, 'rf_pairwise_var', tk.BooleanVar(value=False)).get(),
-                    'rf_group1_var': getattr(self, 'rf_group1_var', tk.StringVar()).get(),
-                    'rf_group2_var': getattr(self, 'rf_group2_var', tk.StringVar()).get(),
                     'rf_roc_var': getattr(self, 'rf_roc_var', tk.BooleanVar(value=True)).get(),
                     'heatmap_top_n_var': self.heatmap_top_n_var.get(),
                     'heatmap_sort_var': getattr(self, 'heatmap_sort_var', tk.StringVar(value="Clustering")).get(),
                     'heatmap_cmap_var': getattr(self, 'heatmap_cmap_var', tk.StringVar(value="coolwarm")).get(),
+                    'heatmap_linkage_var': getattr(self, 'heatmap_linkage_var', tk.StringVar(value="average")).get(),
+                    'heatmap_source_var': getattr(self, 'heatmap_source_var', tk.StringVar(value="Both (Union)")).get(),
+                    'heatmap_label_var': getattr(self, 'heatmap_label_var', tk.StringVar(value="Sample Group")).get(),
+                    'heatmap_feature_label_var': getattr(self, 'heatmap_feature_label_var', tk.StringVar(value="Feature ID")).get(),
+                    'heatmap_annotation_status_var': getattr(self, 'heatmap_annotation_status_var', tk.StringVar(value="No annotation file loaded")).get(),
+                    'hca_data_source_var': getattr(self, 'hca_data_source_var', tk.StringVar(value="Preprocessed Data")).get(),
+                    'hca_filter_enabled_var': getattr(self, 'hca_filter_enabled_var', tk.BooleanVar(value=False)).get(),
+                    'hca_max_features_var': getattr(self, 'hca_max_features_var', tk.IntVar(value=0)).get(),
+                    'hca_linkage_var': getattr(self, 'hca_linkage_var', tk.StringVar(value="average")).get(),
+                    'hca_distance_var': getattr(self, 'hca_distance_var', tk.StringVar(value="euclidean")).get(),
+                    'hca_label_var': getattr(self, 'hca_label_var', tk.StringVar(value="Sample Name")).get(),
+                    'hca_log_var': getattr(self, 'hca_log_var', tk.BooleanVar(value=False)).get(),
+                    'hca_exclude_qc_var': getattr(self, 'hca_exclude_qc_var', tk.BooleanVar(value=False)).get(),
+                    'hca_annotation_status_var': getattr(self, 'hca_annotation_status_var', tk.StringVar(value="No annotation file loaded")).get(),
+                    'global_heatmap_linkage_var': getattr(self, 'global_heatmap_linkage_var', tk.StringVar(value="average")).get(),
                     'venn_thresh_var': self.venn_thresh_var.get(),
-                    'upset_thresh_var': getattr(self, 'upset_thresh_var', tk.DoubleVar(value=80.0)).get(),
                     'feature_search_var': getattr(self, 'feature_search_var', tk.StringVar()).get(),
                     'feature_viewer_id_var': self.feature_viewer_id_var.get(),
                     'fv_data_source_var': getattr(self, 'fv_data_source_var', tk.StringVar(value="Preprocessed Data")).get(),
@@ -5579,12 +7120,16 @@ class MetabolomicsApp(tk.Tk):
                     'fv_show_violin_var': getattr(self, 'fv_show_violin_var', tk.BooleanVar(value=True)).get(),
                     'fv_show_boxplot_var': getattr(self, 'fv_show_boxplot_var', tk.BooleanVar(value=True)).get(),
                     'fv_show_points_var': getattr(self, 'fv_show_points_var', tk.BooleanVar(value=True)).get(),
+                    'fv_sort_groups_var': getattr(self, 'fv_sort_groups_var', tk.StringVar(value="Listbox Order")).get(),
+                    'fv_font_scale_var': getattr(self, 'fv_font_scale_var', tk.DoubleVar(value=1.0)).get(),
                 },
                 'gui_texts': {
                     'summary_text': self.summary_text.get('1.0', tk.END),
                     'preprocess_text': self.preprocess_text.get('1.0', tk.END),
                     'plsda_results_text': self.plsda_results_text.get('1.0', tk.END),
                     'rf_results_text': self.rf_results_text.get('1.0', tk.END),
+                    'pca_filter_text': getattr(self, 'pca_filter_text', tk.Text()).get('1.0', tk.END),
+                    'hca_filter_text': getattr(self, 'hca_filter_text', tk.Text()).get('1.0', tk.END),
                 }
             }
 
@@ -5704,7 +7249,11 @@ class MetabolomicsApp(tk.Tk):
         self.show_dist_button.config(state='normal' if self.preprocessed_data is not None else 'disabled')
         self.update_venn_groups()
         self.update_upset_groups()
+        self.update_global_heatmap_groups()
+        self.update_heatmap_groups()
+        self.update_hca_groups()
         self.update_feature_viewer_groups()
+        self.update_volcano_feature_filters()
         self.update_feature_viewer_options()
 
         if getattr(self, 'plsda_pairwise_var', tk.BooleanVar(value=False)).get() and hasattr(self, 'plsda_group_frame'):
@@ -5729,11 +7278,18 @@ class MetabolomicsApp(tk.Tk):
         if 'rf_results_text' in texts:
             self.rf_results_text.delete('1.0', tk.END)
             self.rf_results_text.insert('1.0', texts['rf_results_text'])
+        if 'pca_filter_text' in texts:
+            self.pca_filter_text.delete('1.0', tk.END)
+            self.pca_filter_text.insert('1.0', texts['pca_filter_text'])
+        if 'hca_filter_text' in texts:
+            self.hca_filter_text.delete('1.0', tk.END)
+            self.hca_filter_text.insert('1.0', texts['hca_filter_text'])
 
     def _recreate_all_plots(self):
         """Helper to redraw all plots after loading a session."""
         self.generated_plots = {} # Clear old plot objects
         if self.preprocessed_data is not None: self.show_distribution_plots()
+        if getattr(self, 'global_heatmap_generated', False): self.run_global_heatmap()
         if self.pca_result is not None: self.create_pca_plot_with_groups(self.pca_result)
         if self.volcano_result is not None: self.create_volcano_plot(self.volcano_result, self.pvalue_var.get(), self.fc_var.get())
         if self.plsda_result is not None: self.create_plsda_plot(self.plsda_result)
@@ -5748,12 +7304,205 @@ class MetabolomicsApp(tk.Tk):
         if self.rf_result is not None: self.create_rf_plot(self.rf_result)
         if self.rf_result is not None: self.vis_manager.create_rf_plot(self.rf_result)
         if self.heatmap_data is not None: self.run_heatmap()
+        if getattr(self, 'hca_result', None) is not None: self.run_hca_only()
         if getattr(self, 'venn_sets', None) is not None:
-            self.vis_manager.create_venn_plot(self.venn_sets, list(self.venn_sets.keys()))
-        if getattr(self, 'upset_sets', None) is not None:
-            self.vis_manager.create_upset_plot(self.upset_sets, list(self.upset_sets.keys()))
+            groups = list(self.venn_sets.keys())
+            if len(groups) <= 3:
+                self.vis_manager.create_venn_plot(self.venn_sets, groups)
+            else:
+                self.vis_manager.create_upset_plot(
+                    self.venn_sets, groups, 
+                    target_frame=self.venn_plot_frame, 
+                    plot_key='Venn Diagram'
+                )
         if self.feature_viewer_id_var.get():
             self.run_feature_plot()
+
+    def create_qc_explorer_tab(self):
+        """Tab for QC monitoring and RSD analysis"""
+        tab = ttk.Frame(self.notebook)
+        self.notebook.add(tab, text="🔬 QC Explorer")
+        
+        control_frame = ttk.LabelFrame(tab, text="QC Shewhart Chart Settings", padding=10)
+        control_frame.pack(fill='x', padx=10, pady=10)
+        
+        # Feature selection logic (similar to feature viewer)
+        feat_select_frame = ttk.Frame(control_frame)
+        feat_select_frame.pack(side='left', fill='y')
+
+        self.qc_analysis_mode = tk.StringVar(value="feature")
+        mode_frame = ttk.Frame(feat_select_frame)
+        mode_frame.grid(row=0, column=0, columnspan=2, sticky='w', pady=(0, 5))
+        ttk.Radiobutton(mode_frame, text="Specific Feature", variable=self.qc_analysis_mode, value="feature", command=self.toggle_qc_feature_select).pack(side='left')
+        ttk.Radiobutton(mode_frame, text="Global Average Intensity", variable=self.qc_analysis_mode, value="global", command=self.toggle_qc_feature_select).pack(side='left', padx=10)
+
+        self.qc_search_label = ttk.Label(feat_select_frame, text="Search Feature:")
+        self.qc_search_label.grid(row=1, column=0, sticky='w', pady=2)
+        self.qc_feature_search_var = tk.StringVar()
+        self.qc_feature_search_var.trace_add('write', self.filter_qc_feature_list)
+        self.qc_search_entry = ttk.Entry(feat_select_frame, textvariable=self.qc_feature_search_var, width=20)
+        self.qc_search_entry.grid(row=1, column=1, sticky='w', padx=5)
+        
+        self.qc_select_label = ttk.Label(feat_select_frame, text="Select Feature:")
+        self.qc_select_label.grid(row=2, column=0, sticky='w', pady=2)
+        self.qc_feature_id_var = tk.StringVar()
+        self.qc_feature_combo = ttk.Combobox(feat_select_frame, textvariable=self.qc_feature_id_var, width=40)
+        self.qc_feature_combo.grid(row=2, column=1, sticky='w', padx=5)
+        self.qc_feature_combo.bind('<<ComboboxSelected>>', lambda e: self.run_qc_analysis())
+        
+        ttk.Button(control_frame, text="▶️ Generate Control Chart", command=self.run_qc_analysis).pack(side='left', padx=20)
+        ttk.Button(control_frame, text="💾 Export Plot", command=self.export_current_plot).pack(side='left', padx=5)
+        ttk.Button(control_frame, text="Export All QC-RSD", command=self.export_all_qc_rsd).pack(side='left', padx=5)
+
+        # Stats Display
+        self.qc_stats_frame = ttk.LabelFrame(tab, text="QC Technical Stability Summary", padding=10)
+        self.qc_stats_frame.pack(fill='x', padx=10, pady=5)
+        self.qc_stats_label = ttk.Label(self.qc_stats_frame, text="Please select QC samples in the 'Data' or 'Preprocessing' tab to enable analysis.", font=('Courier', 10))
+        self.qc_stats_label.pack(fill='x')
+
+        # Plot area
+        self.qc_plot_frame = ttk.Frame(tab)
+        self.qc_plot_frame.pack(fill='both', expand=True, padx=10, pady=5)
+
+    def toggle_qc_feature_select(self):
+        """Enable/Disable feature selection based on analysis mode"""
+        state = 'normal' if self.qc_analysis_mode.get() == 'feature' else 'disabled'
+        self.qc_search_label.config(state=state)
+        self.qc_search_entry.config(state=state)
+        self.qc_select_label.config(state=state)
+        self.qc_feature_combo.config(state=state)
+        
+        if self.qc_analysis_mode.get() == 'global':
+            self.run_qc_analysis()
+
+    def filter_qc_feature_list(self, *args):
+        """Filter the QC feature list based on search term"""
+        if not hasattr(self, 'all_feature_ids') or not self.all_feature_ids: return
+        term = self.qc_feature_search_var.get().lower()
+        filtered = [f for f in self.all_feature_ids if term in str(f).lower()]
+        self.qc_feature_combo['values'] = filtered
+
+    def run_qc_analysis(self):
+        """Analyze QC RSD and plot Shewhart control chart for selected feature"""
+        if self.data is None:
+            messagebox.showwarning("Warning", "Please load data first!")
+            return
+            
+        if not self.qc_samples:
+            messagebox.showwarning("Warning", "No QC samples defined! Please use 'Select QC Samples' in the Preprocessing or Data tab first.")
+            return
+            
+        mode = self.qc_analysis_mode.get()
+        feature_id = self.qc_feature_id_var.get() if mode == 'feature' else "Global Average Intensity"
+        
+        try:
+            self.update_status(f"Analyzing QC stability for {feature_id}...")
+            
+            # Identify all columns belonging to designated QC samples, maintaining run order
+            all_sample_cols = [col for col in self.data.columns if '.mzML' in col]
+            qc_cols = []
+            for col in all_sample_cols:
+                base_name = re.sub(r'_(\d+|avg)\.mzML.*', '', col)
+                if base_name in self.qc_samples:
+                    qc_cols.append(col)
+                    
+            # Apply natural alphanumeric sorting so QC_10 comes after QC_9, instead of QC_1
+            qc_cols = sorted(qc_cols, key=lambda x: [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', x)])
+            
+            if not qc_cols:
+                messagebox.showerror("Error", "No columns found for the selected QC samples.")
+                return
+                
+            if mode == 'feature':
+                if not feature_id:
+                    messagebox.showwarning("Warning", "Please select a feature to analyze.")
+                    return
+                # Find data row
+                row = self.data[self.data.iloc[:, 0] == feature_id].iloc[0]
+                # Extract intensities and convert to numeric
+                intensities = pd.to_numeric(row[qc_cols], errors='coerce').values.astype(float)
+            else:
+                # Global mode: calculate average of ALL features for each QC injection
+                qc_data = self.data[qc_cols]
+                # Convert all entries to numeric, coercing errors to NaN
+                qc_data_numeric = qc_data.apply(pd.to_numeric, errors='coerce')
+                # Calculate mean per column (injection) across all features (rows)
+                intensities = qc_data_numeric.mean(axis=0).values.astype(float)
+                feature_id = "Global Average (All Features)"
+            
+            # Exclude missing values from the chart
+            valid_mask = ~np.isnan(intensities)
+            clean_intensities = intensities[valid_mask]
+            clean_cols = np.array(qc_cols)[valid_mask].tolist()
+            
+            if len(clean_intensities) < 2:
+                messagebox.showwarning("Warning", "Insufficient QC data points (need at least 2) for this feature.")
+                return
+                
+            # Compute Metrics
+            mean_val = np.mean(clean_intensities)
+            sd_val = np.std(clean_intensities, ddof=1)
+            rsd_val = (sd_val / mean_val * 100) if mean_val > 0 else 0
+            
+            # Detect QC violations based on rules
+            violations = self._detect_qc_violations(clean_intensities, mean_val, sd_val)
+            
+            # Update UI
+            violation_summary = []
+            if violations:
+                violation_summary.append("\n⚠️ OUT-OF-CONTROL ALERTS:")
+                for idx, rules in violations.items():
+                    sample_name = clean_cols[idx].replace('.mzML', '')[:15]
+                    for rule in rules:
+                        violation_summary.append(f"  • {sample_name}: {rule}")
+            else:
+                violation_summary.append("\n✅ All QC injections within control limits.")
+
+            stats_text = (f"Analysis for Feature: {feature_id}\n"
+                          f"--------------------------------------------------\n"
+                          f"QC Samples Identified: {len(clean_intensities)}\n"
+                          f"Mean Intensity:        {mean_val:.4e}\n"
+                          f"Standard Deviation:    {sd_val:.4e}\n"
+                          f"QC RSD (%):            {rsd_val:.2f}%"
+                          f"{''.join(violation_summary)}")
+            self.qc_stats_label.config(text=stats_text)
+            
+            stats_dict = {'mean': mean_val, 'sd': sd_val, 'rsd': rsd_val}
+            
+            # Plot
+            self.vis_manager.create_qc_control_chart(feature_id, clean_intensities, clean_cols, stats_dict, self.qc_plot_frame, violations=violations)
+            self.update_status(f"✓ QC Shewhart chart updated for {feature_id}")
+            
+        except Exception as e:
+            import traceback
+            messagebox.showerror("Error", f"QC analysis failed: {str(e)}\n{traceback.format_exc()}")
+            self.update_status("Error in QC Explorer")
+
+    def _detect_qc_violations(self, values, mean, sd):
+        """Detects violations in QC technical stability based on provided criteria."""
+        violations = defaultdict(list)
+        if sd == 0: return violations
+        
+        for i in range(len(values)):
+            # Rule 1: One sample exceeds ±3SD
+            if abs(values[i] - mean) > 3 * sd:
+                violations[i].append("Rule 1: Outside ±3SD")
+            # Rule 2: Two consecutive samples exceed ±2SD on same side
+            if i >= 1:
+                win2 = values[i-1:i+1]
+                if all(v > mean + 2*sd for v in win2) or all(v < mean - 2*sd for v in win2):
+                    violations[i].append("Rule 2: 2 consecutive > ±2SD (Same Side)")
+            # Rule 3: Four consecutive samples exceed ±1SD on same side
+            if i >= 3:
+                win4 = values[i-3:i+1]
+                if all(v > mean + sd for v in win4) or all(v < mean - sd for v in win4):
+                    violations[i].append("Rule 3: 4 consecutive > ±1SD (Same Side)")
+            # Rule 4: Ten consecutive samples on same side of mean
+            if i >= 9:
+                win10 = values[i-9:i+1]
+                if all(v > mean for v in win10) or all(v < mean for v in win10):
+                    violations[i].append("Rule 4: 10 consecutive on same side of mean")
+        return dict(violations)
 
     # ==================== Utility Functions ====================
     
