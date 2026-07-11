@@ -1,6 +1,7 @@
 # 🌿 Herbal Metabolomics Analyzer
 
 A comprehensive desktop GUI application for the untargeted analysis of metabolomics data, specifically designed for natural product and herbal medicine research. This tool provides an end-to-end workflow, from raw MZmine quantification data to biomarker discovery and visualization.
+*AI disclosure: CodeX, Gemini Code Assisstant and Preplexity were used to build up, debug and knowledge gathering for this tool.*
 
 ---
 
@@ -135,7 +136,7 @@ This tool is built on the following open-source libraries:
 
 ## 📞 Contact & Support
 
-For questions, bug reports, or feature requests, please contact the author or open an issue on the project repository.
+For questions, bug reports, or feature requests, please contact the trinhtacdat@gmail.com or open an issue on the project repository.
 
 ---
 

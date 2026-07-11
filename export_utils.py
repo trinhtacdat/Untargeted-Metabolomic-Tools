@@ -124,6 +124,7 @@ class ExportManager:
                 
                 if filepath:
                     old_size = fig.get_size_inches()
+<<<<<<< HEAD
                     autoscale_text = getattr(fig, '_export_autoscale_text', [])
                     original_font_sizes = [text.get_fontsize() for text in autoscale_text]
                     old_area = max(float(old_size[0] * old_size[1]), 0.01)
@@ -136,10 +137,15 @@ class ExportManager:
                             fig.tight_layout()
                         except Exception:
                             pass
+=======
+                    fig.set_size_inches(w, h) # Apply temp size
+                    try:
+>>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
                         fig.savefig(filepath, dpi=dpi, bbox_inches='tight')
                         messagebox.showinfo("Success", f"Plot saved to:\n{filepath}", parent=dialog)
                         dialog.destroy()
                     finally:
+<<<<<<< HEAD
                         for text, font_size in zip(autoscale_text, original_font_sizes):
                             text.set_fontsize(font_size)
                         fig.set_size_inches(old_size) # Restore size
@@ -147,6 +153,9 @@ class ExportManager:
                             fig.tight_layout()
                         except Exception:
                             pass
+=======
+                        fig.set_size_inches(old_size) # Restore size
+>>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
             except ValueError:
                 messagebox.showerror("Input Error", "Width, Height and DPI must be numeric.", parent=dialog)
         
@@ -487,7 +496,11 @@ class ExportManager:
                     plt.close(fig)
 
                     # Export Plots in specific order
+<<<<<<< HEAD
                     plot_order = ['Preprocessing', 'Global Heatmap', 'PCA', 'Univariate Screening', 'PLS-DA', 'PLS-DA Validation', 'Random Forest', 'Heatmap', 'Venn Diagram']
+=======
+                    plot_order = ['Preprocessing', 'PCA', 'Univariate Screening', 'PLS-DA', 'PLS-DA Validation', 'Random Forest', 'Heatmap', 'Venn Diagram']
+>>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
                     for name in plot_order:
                         if name in generated_plots:
                             try:
