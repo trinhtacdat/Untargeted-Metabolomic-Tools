@@ -12,10 +12,7 @@ import matplotlib.transforms as transforms
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 import scipy.cluster.hierarchy as sch
 import re
-<<<<<<< HEAD
 from matplotlib.colors import to_rgb
-=======
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
 from collections import defaultdict
 import itertools
 from scipy import stats
@@ -165,7 +162,6 @@ class VisualizationManager:
         fig.tight_layout(pad=2.0)
         self._embed_plot(fig, self.app.preprocessing_plot_frame)
 
-<<<<<<< HEAD
     def create_qc_control_chart(self, feature_id, values, sample_names, stats_dict, target_frame, violations=None):
         """Creates a Shewhart control chart for QC monitoring."""
         self._clear_frame(target_frame)
@@ -215,8 +211,6 @@ class VisualizationManager:
         fig.tight_layout()
         self._embed_plot(fig, target_frame)
 
-=======
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
     def _draw_confidence_ellipse(self, ax, x, y, n_std=2.4477, facecolor='none', **kwargs):
         """Draw confidence ellipse for a group of points."""
         if len(x) < 2:
@@ -257,14 +251,10 @@ class VisualizationManager:
         canvas = self._embed_plot(fig, self.app.pca_plot_frame)
 
         if groups:
-<<<<<<< HEAD
             configured_order = pca_result.get('group_order', getattr(self.app, 'pca_group_order', []))
             present_groups = set(groups)
             unique_groups = [group for group in configured_order if group in present_groups]
             unique_groups.extend(sorted(present_groups - set(unique_groups)))
-=======
-            unique_groups = sorted(set(groups))
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
             for group in unique_groups:
                 group_indices = [i for i, g in enumerate(groups) if g == group]
                 group_scores_pc1 = pca_result['scores'][group_indices, 0]
@@ -420,14 +410,10 @@ class VisualizationManager:
 
         ax1 = fig.add_subplot(121)
         groups = result['groups']
-<<<<<<< HEAD
         configured_order = result.get('group_order', getattr(self.app, 'plsda_group_order', []))
         present_groups = set(groups)
         unique_groups = [group for group in configured_order if group in present_groups]
         unique_groups.extend(sorted(present_groups - set(unique_groups)))
-=======
-        unique_groups = sorted(set(groups))
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
 
         for group in unique_groups:
             indices = [i for i, g in enumerate(groups) if g == group]
@@ -474,19 +460,10 @@ class VisualizationManager:
         ax.scatter([1.0], [perm_results['q2_actual']], color='#2ca02c', marker='*', s=150, label='Q² (Actual)')
 
         if len(perm_results['corrs']) > 1:
-<<<<<<< HEAD
             # Draw lines connecting the calculated intercepts at correlation 0 directly to the actual points at correlation 1.0
             # This ensures the trend line strictly "connects" to the unpermuted result star.
             ax.plot([0, 1.0], [perm_results['r2_int'], perm_results['r2_actual']], color='#1f77b4', linestyle='--', alpha=0.7)
             ax.plot([0, 1.0], [perm_results['q2_int'], perm_results['q2_actual']], color='#2ca02c', linestyle='--', alpha=0.7)
-=======
-            all_corrs = perm_results['corrs'] + [1.0]
-            all_r2, all_q2 = perm_results['r2_perms'] + [perm_results['r2_actual']], perm_results['q2_perms'] + [perm_results['q2_actual']]
-            p_r2, p_q2 = np.poly1d(np.polyfit(all_corrs, all_r2, 1)), np.poly1d(np.polyfit(all_corrs, all_q2, 1))
-            x_line = np.linspace(min(perm_results['corrs'] + [0]), 1.0, 50)
-            ax.plot(x_line, p_r2(x_line), color='#1f77b4', linestyle='--')
-            ax.plot(x_line, p_q2(x_line), color='#2ca02c', linestyle='--')
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
 
         title = (f"PLS-DA Permutation Test (n={perm_results['n_perms']})\n"
                  f"R²Y = {perm_results['r2_actual']:.3f}, Q² = {perm_results['q2_actual']:.3f}\n"
@@ -494,10 +471,7 @@ class VisualizationManager:
         ax.set_title(title, fontsize=fonts['title'], fontweight='bold')
         ax.set_xlabel("Correlation between permuted and original Y", fontsize=fonts['label'])
         ax.set_ylabel("Score (R² / Q²)", fontsize=fonts['label'])
-<<<<<<< HEAD
         ax.set_xlim(0, 1.05)
-=======
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
         ax.legend(loc='best')
         ax.grid(True, linestyle=':', alpha=0.6)
         fig.tight_layout()
@@ -573,7 +547,6 @@ class VisualizationManager:
         fig.tight_layout()
         self._embed_plot(fig, self.app.rf_plot_frame)
 
-<<<<<<< HEAD
     def create_rf_permutation_plot(self, perm_results):
         """Creates the Random Forest permutation validation plot."""
         self._clear_frame(self.app.rf_plot_frame)
@@ -611,11 +584,6 @@ class VisualizationManager:
             target_frame = self.app.heatmap_plot_frame
             
         self._clear_frame(target_frame)
-=======
-    def create_heatmap_plot(self, ordered_data, feature_labels, final_sample_names, col_linkage, row_linkage, n_bio, n_qc, cmap='coolwarm'):
-        """Creates the heatmap plot."""
-        self._clear_frame(self.app.heatmap_plot_frame)
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
 
         w, h, dpi = self._get_plot_dims()
         fonts = self._get_font_sizes()
@@ -623,7 +591,6 @@ class VisualizationManager:
         # Accommodate extra width if plotting an extra dendrogram
         fig_width = w * 1.6 if row_linkage is not None else w * 1.5
         fig = Figure(figsize=(fig_width, h * 1.1), dpi=dpi)
-<<<<<<< HEAD
         self.app.generated_plots[plot_key] = fig
         
         # Determine if we should show the column dendrogram
@@ -637,23 +604,12 @@ class VisualizationManager:
             ax_group_colors = fig.add_subplot(gs[1, 1])
             ax_dendro_row = fig.add_subplot(gs[2, 0])
             ax_heatmap = fig.add_subplot(gs[2, 1])
-=======
-        self.app.generated_plots['Heatmap'] = fig
-        
-        if row_linkage is not None:
-            gs = GridSpec(2, 2, width_ratios=[1, 7], height_ratios=[1, 5], hspace=0.05, wspace=0.01)
-            gs.update(left=0.05, right=0.82)
-            ax_dendro_col = fig.add_subplot(gs[0, 1])
-            ax_dendro_row = fig.add_subplot(gs[1, 0])
-            ax_heatmap = fig.add_subplot(gs[1, 1])
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
             
             sch.dendrogram(row_linkage, orientation='left', ax=ax_dendro_row, no_labels=True, color_threshold=0, above_threshold_color='black')
             ax_dendro_row.set_ylim(0, 10 * len(feature_labels))
             ax_dendro_row.invert_yaxis()  # Invert to align with imshow
             ax_dendro_row.axis('off')
         else:
-<<<<<<< HEAD
             gs = GridSpec(3, 1, height_ratios=h_ratios, hspace=0.02)
             gs.update(left=0.1, right=0.82, top=0.9)
             ax_dendro_col = fig.add_subplot(gs[0, 0])
@@ -661,19 +617,10 @@ class VisualizationManager:
             ax_heatmap = fig.add_subplot(gs[2, 0])
 
         if show_col_dendro:
-=======
-            gs = GridSpec(2, 1, height_ratios=[1, 5], hspace=0.05)
-            gs.update(left=0.1, right=0.82)
-            ax_dendro_col = fig.add_subplot(gs[0, 0])
-            ax_heatmap = fig.add_subplot(gs[1, 0])
-
-        if n_bio > 1:
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
             sch.dendrogram(col_linkage, orientation='top', ax=ax_dendro_col, no_labels=True, color_threshold=0, above_threshold_color='black')
             ax_dendro_col.set_xlim(0, 10 * (n_bio + n_qc))
 
         ax_dendro_col.axis('off')
-<<<<<<< HEAD
         
         if column_colors:
             rgb_array = np.array([[to_rgb(c) for c in column_colors]])
@@ -687,19 +634,13 @@ class VisualizationManager:
         
         # Clamp the colormap limits to [-3, 3] so outliers don't wash out the Z-score variance
         cax = ax_heatmap.imshow(ordered_data, aspect='auto', cmap=cmap, interpolation='nearest', vmin=-3, vmax=3)
-=======
-        cax = ax_heatmap.imshow(ordered_data, aspect='auto', cmap=cmap, interpolation='nearest')
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
 
         if n_bio > 0 and n_qc > 0:
             ax_heatmap.axvline(x=n_bio - 0.5, color='black', linewidth=1, linestyle='--', alpha=0.9)
 
         ax_heatmap.set_xticks(range(len(final_sample_names)))
         ax_heatmap.set_xticklabels(final_sample_names, rotation=45, ha='right', fontsize=fonts['tiny'])
-<<<<<<< HEAD
         export_autoscale_text = list(ax_heatmap.get_xticklabels())
-=======
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
 
         for tick_label in ax_heatmap.get_xticklabels():
             group_text = tick_label.get_text().split('[')[-1].replace(']', '')
@@ -707,17 +648,12 @@ class VisualizationManager:
                 tick_label.set_color(self.app.group_colors[group_text])
                 tick_label.set_fontweight('bold')
 
-<<<<<<< HEAD
         if 0 < len(feature_labels) <= 100:
             ax_heatmap.set_yticks(range(len(feature_labels)))
             ax_heatmap.set_yticklabels(feature_labels, fontsize=fonts['annot'])
         else:
             ax_heatmap.set_yticks([])
             ax_heatmap.set_yticklabels([])
-=======
-        ax_heatmap.set_yticks(range(len(feature_labels)))
-        ax_heatmap.set_yticklabels(feature_labels, fontsize=fonts['annot'])
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
 
         # Move y-axis labels to the right side to prevent overlap with the dendrogram
         ax_heatmap.yaxis.tick_right()
@@ -725,7 +661,6 @@ class VisualizationManager:
 
         cbar_ax = fig.add_axes([0.93, 0.15, 0.02, 0.6])
         fig.colorbar(cax, cax=cbar_ax, label="Z-score")
-<<<<<<< HEAD
 
         if show_group_legend and column_groups:
             visible_groups = list(dict.fromkeys(column_groups))
@@ -743,11 +678,6 @@ class VisualizationManager:
 
         # Let high-resolution export scale sample labels and their group legend.
         fig._export_autoscale_text = export_autoscale_text
-=======
-        
-        title = "Heatmap of Top Selected Features" + (" (Clustered)" if row_linkage is not None else " (Sorted by RT)")
-        fig.suptitle(title, fontsize=fonts['title'], fontweight='bold', y=0.95)
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
 
         # --- Interactive Tooltip Logic ---
         annot = ax_heatmap.annotate("", xy=(0,0), xytext=(20, 20), textcoords="offset points",
@@ -771,7 +701,6 @@ class VisualizationManager:
                 annot.set_visible(False)
                 fig.canvas.draw_idle()
 
-<<<<<<< HEAD
         self._embed_plot(fig, target_frame, hover_handler=on_hover)
 
     def create_hca_only_plot(self, linkage_matrix, labels, title="Sample HCA Dendrogram",
@@ -829,33 +758,20 @@ class VisualizationManager:
         self._embed_plot(fig, target_frame)
 
     def create_venn_plot(self, sets, group_names, target_frame=None, plot_key='Venn Diagram', plot_title=None):
-=======
-        self._embed_plot(fig, self.app.heatmap_plot_frame, hover_handler=on_hover)
-
-    def create_venn_plot(self, sets, group_names):
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
         """
         Create a schematic Venn diagram (2 or 3 sets) using matplotlib patches.
         Does not require matplotlib-venn library.
         """
-<<<<<<< HEAD
         if target_frame is None:
             target_frame = self.app.venn_plot_frame
             
         self._clear_frame(target_frame)
-=======
-        self._clear_frame(self.app.venn_plot_frame)
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
         fonts = self._get_font_sizes()
         
         w, h, dpi = self._get_plot_dims()
         # Increase width to accommodate side-by-side plots
         fig = Figure(figsize=(w * 1.8, h), dpi=dpi)
-<<<<<<< HEAD
         self.app.generated_plots[plot_key] = fig
-=======
-        self.app.generated_plots['Venn Diagram'] = fig
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
         
         # --- Left: Venn Diagram ---
         ax = fig.add_subplot(121)
@@ -943,12 +859,8 @@ class VisualizationManager:
                     ax.set_ylim(-1.1, 1.1)
                     venn_drawn = True
                 if venn_drawn:
-<<<<<<< HEAD
                     title = plot_title if plot_title else "Feature Overlap (Proportional)"
                     ax.set_title(title, fontsize=fonts['title'], fontweight='bold', y=0.90)
-=======
-                    ax.set_title("Feature Overlap (Proportional)", fontsize=fonts['title'], fontweight='bold', y=0.90)
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
             except Exception:
                 venn_drawn = False
 
@@ -1034,12 +946,8 @@ class VisualizationManager:
             ax.legend(handles=legend_handles, loc='upper center', bbox_to_anchor=(0.5, 0.05), frameon=False, ncol=len(group_names), fontsize=fonts['legend'])
 
         if not venn_drawn:
-<<<<<<< HEAD
             title = plot_title if plot_title else "Feature Overlap Venn Diagram"
             ax.set_title(title, fontsize=fonts['title'], fontweight='bold', y=0.90)
-=======
-            ax.set_title("Feature Overlap Venn Diagram", fontsize=fonts['title'], fontweight='bold', y=0.90)
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
         
         # --- Right: Bar Chart ---
         ax2 = fig.add_subplot(122)
@@ -1061,7 +969,6 @@ class VisualizationManager:
         
         fig.tight_layout(pad=3.0)
         
-<<<<<<< HEAD
         canvas = self._embed_plot(fig, target_frame)
 
         # Context Menu for Exporting Subsets (Only for Group Comparison Venn)
@@ -1086,40 +993,11 @@ class VisualizationManager:
     def create_upset_plot(self, sets, group_names, target_frame, plot_key='UpSet Plot'):
         """Creates an UpSet-style plot for comparing feature intersections across >=2 groups."""
         self._clear_frame(target_frame)
-=======
-        canvas = self._embed_plot(fig, self.app.venn_plot_frame)
-
-        # Context Menu for Exporting Subsets
-        menu = tk.Menu(self.app, tearoff=0)
-        menu.add_command(label="Export Common Features (Intersection)", command=lambda: self.app.export_venn_data_subset('COMMON'))
-        menu.add_separator()
-        for g in group_names:
-            menu.add_command(label=f"Export Unique to {g}", command=lambda g=g: self.app.export_venn_data_subset(f'UNIQUE_{g}'))
-        
-        menu.add_separator()
-        menu.add_command(label="Export All Unique Features (Diff)", command=lambda: self.app.export_venn_data_subset('UNIQUE_COMBINED'))
-
-        def show_context_menu(event):
-            try:
-                menu.tk_popup(event.x_root, event.y_root)
-            finally:
-                menu.grab_release()
-                
-        canvas.get_tk_widget().bind("<Button-3>", show_context_menu)
-
-    def create_upset_plot(self, sets, group_names):
-        """Creates an UpSet-style plot for comparing feature intersections across >=2 groups."""
-        self._clear_frame(self.app.upset_plot_frame)
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
         fonts = self._get_font_sizes()
         
         w, h, dpi = self._get_plot_dims()
         fig = Figure(figsize=(w * 1.8, h), dpi=dpi)
-<<<<<<< HEAD
         self.app.generated_plots[plot_key] = fig
-=======
-        self.app.generated_plots['UpSet Plot'] = fig
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
         
         default_colors = ['#FF9999', '#66B2FF', '#99FF99', '#FFCC99', '#E5CCFF', '#99CCFF']
         colors = [self.app.group_colors.get(g, default_colors[i % len(default_colors)]) for i, g in enumerate(group_names)]
@@ -1144,11 +1022,7 @@ class VisualizationManager:
         
         if not values:
             ax_bar.text(0.5, 0.5, "No intersections found", ha='center', va='center')
-<<<<<<< HEAD
             self._embed_plot(fig, target_frame)
-=======
-            self._embed_plot(fig, self.app.upset_plot_frame)
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
             return
 
         bars = ax_bar.bar(range(len(values)), values, color='teal', alpha=0.6)
@@ -1182,7 +1056,6 @@ class VisualizationManager:
                 ax_matrix.plot([col_idx, col_idx], [min(row_indices), max(row_indices)], color='black', lw=2, zorder=2)
                 
         fig.tight_layout(pad=3.0)
-<<<<<<< HEAD
         canvas = self._embed_plot(fig, target_frame)
 
         # Context Menu for Exporting Subsets
@@ -1211,33 +1084,13 @@ class VisualizationManager:
             canvas.get_tk_widget().bind("<Button-3>", show_context_menu)
 
     def create_feature_distribution_plot(self, feature_id, plot_data, group_labels, sample_names=None, ylabel="Peak Intensity", show_points=True, show_violin=True, show_boxplot=True, font_scale=1.0):
-=======
-        canvas = self._embed_plot(fig, self.app.upset_plot_frame)
-
-        menu = tk.Menu(self.app, tearoff=0)
-        menu.add_command(label="Export Common Features (Intersection)", command=lambda: self.app.export_upset_data_subset('COMMON'))
-        menu.add_separator()
-        for g in group_names:
-            menu.add_command(label=f"Export Unique to {g}", command=lambda g=g: self.app.export_upset_data_subset(f'UNIQUE_{g}'))
-        menu.add_separator()
-        menu.add_command(label="Export All Unique Features (Diff)", command=lambda: self.app.export_upset_data_subset('UNIQUE_COMBINED'))
-
-        def show_context_menu(event):
-            menu.tk_popup(event.x_root, event.y_root)
-        canvas.get_tk_widget().bind("<Button-3>", show_context_menu)
-
-    def create_feature_distribution_plot(self, feature_id, plot_data, group_labels, sample_names=None, ylabel="Peak Intensity", show_points=True, show_violin=True, show_boxplot=True):
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
         """Creates a distribution plot (violin/box/swarm) for a single feature's intensity across groups."""
         self._clear_frame(self.app.feature_viewer_plot_frame)
 
         w, h, dpi = self._get_plot_dims()
         fonts = self._get_font_sizes()
-<<<<<<< HEAD
         font_scale = max(0.6, min(float(font_scale), 3.0))
         fonts = {key: max(1, int(value * font_scale)) for key, value in fonts.items()}
-=======
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
         fig = Figure(figsize=(w, h), dpi=dpi)
         self.app.generated_plots['Feature_Viewer'] = fig
         ax = fig.add_subplot(111)
@@ -1320,11 +1173,7 @@ class VisualizationManager:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 if len(plot_data) == 2:
-<<<<<<< HEAD
                     # Welch's T-test for exactly 2 groups
-=======
-                    # T-test for exactly 2 groups
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
                     try:
                         stat_val, pval = stats.ttest_ind(plot_data[0], plot_data[1], equal_var=False)
                         if not np.isnan(pval):
@@ -1333,7 +1182,6 @@ class VisualizationManager:
                             ax.plot([1, 1, 2, 2], [y_bracket, y_bracket+h_bracket, y_bracket+h_bracket, y_bracket], lw=1.2, c='k')
                             pval_text = f"p = {pval:.3f}" if pval > 0.001 else f"p = {pval:.2e}"
                             if pval < 0.001:
-<<<<<<< HEAD
                                 pval_text += "***"
                             elif pval < 0.01:
                                 pval_text += "**"
@@ -1342,15 +1190,6 @@ class VisualizationManager:
                             ax.text(1.5, y_bracket + h_bracket * 1.5, pval_text, ha='center', va='bottom', fontsize=fonts['tick'], fontweight='bold')
                             ax.set_ylim(top=y_bracket + h_bracket * 5)
                             title_text += f"\nWelch's t-test {pval_text}"
-=======
-                                pval_text += " ***"
-                            elif pval < 0.01:
-                                pval_text += " **"
-                            elif pval < 0.05:
-                                pval_text += " *"
-                            ax.text(1.5, y_bracket+h_bracket, pval_text, ha='center', va='bottom', fontsize=fonts['annot'])
-                            ax.set_ylim(top=y_bracket + h_bracket * 4)
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
                     except Exception:
                         pass
                 else:
@@ -1361,11 +1200,7 @@ class VisualizationManager:
                             f_stat, pval = stats.f_oneway(*valid_data)
                             if not np.isnan(pval):
                                 pval_text = f"p = {pval:.3f}" if pval > 0.001 else f"p = {pval:.2e}"
-<<<<<<< HEAD
                                 title_text += f"\nOne-way ANOVA {pval_text}"
-=======
-                                title_text += f"\nANOVA {pval_text}"
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
                                 
                             # Pairwise significance brackets if <= 5 groups (avoiding clutter)
                             if 2 < len(plot_data) <= 5:
@@ -1380,19 +1215,11 @@ class VisualizationManager:
                                     if not np.isnan(pv) and pv < 0.05:
                                         ax.plot([i+1, i+1, j+1, j+1], [y_bracket, y_bracket+h_bracket, y_bracket+h_bracket, y_bracket], lw=1.0, c='k', alpha=0.7)
                                         sig_text = "***" if pv < 0.001 else ("**" if pv < 0.01 else "*")
-<<<<<<< HEAD
                                         ax.text((i+1 + j+1)/2.0, y_bracket + h_bracket * 1.5, sig_text, ha='center', va='bottom', fontsize=fonts['annot'], fontweight='bold', color='k')
                                         y_bracket += h_bracket * 6.0
                                         bracket_drawn = True
                                 if bracket_drawn:
                                     ax.set_ylim(top=y_bracket + h_bracket * 6)
-=======
-                                        ax.text((i+1 + j+1)/2.0, y_bracket+h_bracket, sig_text, ha='center', va='bottom', fontsize=fonts['annot'], color='k')
-                                        y_bracket += h_bracket * 2.5
-                                        bracket_drawn = True
-                                if bracket_drawn:
-                                    ax.set_ylim(top=y_bracket + h_bracket * 2)
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
                     except Exception:
                         pass
 
@@ -1400,10 +1227,7 @@ class VisualizationManager:
         
         ax.tick_params(axis='x', rotation=30, labelsize=fonts['tick'])
         ax.grid(True, axis='y', linestyle='--', alpha=0.6)
-<<<<<<< HEAD
         fig._export_autoscale_text = list(ax.get_xticklabels())
-=======
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
 
         # --- Interactive Tooltip Logic ---
         annot = ax.annotate("", xy=(0,0), xytext=(10,10), textcoords="offset points",
@@ -1435,8 +1259,4 @@ class VisualizationManager:
                     event.canvas.draw_idle()
 
         fig.tight_layout()
-<<<<<<< HEAD
         self._embed_plot(fig, self.app.feature_viewer_plot_frame, hover_handler=on_hover)
-=======
-        self._embed_plot(fig, self.app.feature_viewer_plot_frame, hover_handler=on_hover)
->>>>>>> 66f77d8c4e0a0004279436d58573ca587e587373
